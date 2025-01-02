@@ -1,0 +1,14 @@
+CMake Warning at D:/ESP/Espressif/frameworks/esp-idf-v5.3.1/tools/cmake/component.cmake:294 (message):
+  No source files found for SRC_DIRS entry 'ui/fonts'.
+Call Stack (most recent call first):
+  D:/ESP/Espressif/frameworks/esp-idf-v5.3.1/tools/cmake/component.cmake:444 (__component_add_sources)
+  main/CMakeLists.txt:4 (idf_component_register)
+
+
+CMake Warning at D:/ESP/Espressif/frameworks/esp-idf-v5.3.1/tools/cmake/component.cmake:294 (message):
+  No source files found for SRC_DIRS entry 'ui/fonts'.
+Call Stack (most recent call first):
+  D:/ESP/Espressif/frameworks/esp-idf-v5.3.1/tools/cmake/component.cmake:444 (__component_add_sources)
+  main/CMakeLists.txt:4 (idf_component_register)
+
+

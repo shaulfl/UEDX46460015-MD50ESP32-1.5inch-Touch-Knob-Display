@@ -141,12 +141,21 @@ The following products control IM through software
 
 #if defined(BOARD_UEDX48480021_MD80ET) || defined(BOARD_UEDX48480021_MD80E)
 #define KNOB
-#define KNOB21
-#endif
-#if defined(BOARD_UEDX24240013_MD50E)
+#define GPIO_NUM_KNOB_PIN_A     6
+#define GPIO_NUM_KNOB_PIN_B     5
+#define GPIO_BUTTON_PIN         GPIO_NUM_0
+#elif defined(BOARD_UEDX24240013_MD50E)
 #define KNOB
-#define KNOB13
+#define GPIO_NUM_KNOB_PIN_A     7
+#define GPIO_NUM_KNOB_PIN_B     6
+#define GPIO_BUTTON_PIN         GPIO_NUM_9
+#elif defined(BOARD_UEDX46460015_MD50E)
+#define KNOB
+#define GPIO_NUM_KNOB_PIN_A     7
+#define GPIO_NUM_KNOB_PIN_B     6
+#define GPIO_BUTTON_PIN         GPIO_NUM_0
 #endif
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////// File Version ///////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -59,18 +59,6 @@
  */
 #include <demos/lv_demos.h>
 // #include <examples/lv_examples.h>
-#ifdef KNOB21
-#define GPIO_NUM_KNOB_PIN_A     6
-#define GPIO_NUM_KNOB_PIN_B     5
-#define GPIO_BUTTON_PIN         GPIO_NUM_0
-#endif
-#ifdef KNOB13
-#define GPIO_NUM_KNOB_PIN_A     7
-#define GPIO_NUM_KNOB_PIN_B     6
-#define GPIO_BUTTON_PIN         GPIO_NUM_9
-#endif
-
-
 
 /*Initialize UI start*/
 /*Initialize UI end*/
@@ -83,24 +71,24 @@ ESP_Knob *knob;
 void onKnobLeftEventCallback(int count, void *usr_data)
 {
     Serial.printf("Detect left event, count is %d\n", count);
-    lvgl_port_lock(-1);
-    LVGL_knob_event((void*)KNOB_LEFT);
-    lvgl_port_unlock();
+    // lvgl_port_lock(-1);
+    // LVGL_knob_event((void*)KNOB_LEFT);
+    // lvgl_port_unlock();
 }
 
 void onKnobRightEventCallback(int count, void *usr_data)
 {
     Serial.printf("Detect right event, count is %d\n", count);
-    lvgl_port_lock(-1);
-    LVGL_knob_event((void*)KNOB_RIGHT);
-    lvgl_port_unlock();
+    // lvgl_port_lock(-1);
+    // LVGL_knob_event((void*)KNOB_RIGHT);
+    // lvgl_port_unlock();
 }
 
 static void SingleClickCb(void *button_handle, void *usr_data) {
     Serial.println("Button Single Click");
-    lvgl_port_lock(-1);
-    LVGL_button_event((void*)BUTTON_SINGLE_CLICK);
-    lvgl_port_unlock();
+    // lvgl_port_lock(-1);
+    // LVGL_button_event((void*)BUTTON_SINGLE_CLICK);
+    // lvgl_port_unlock();
 }
 static void DoubleClickCb(void *button_handle, void *usr_data)
 {
@@ -108,9 +96,9 @@ static void DoubleClickCb(void *button_handle, void *usr_data)
 }
 static void LongPressStartCb(void *button_handle, void *usr_data) {
     Serial.println("Button Long Press Start");
-    lvgl_port_lock(-1);
-    LVGL_button_event((void*)BUTTON_LONG_PRESS_START);
-    lvgl_port_unlock();
+    // lvgl_port_lock(-1);
+    // LVGL_button_event((void*)BUTTON_LONG_PRESS_START);
+    // lvgl_port_unlock();
 }
 #endif
 

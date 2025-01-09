@@ -3,7 +3,10 @@
 The example demonstrates how to port LVGL(v8). And for RGB LCD, it can enable the avoid tearing function.
 
 ## How to Use
+### Installing arduino-esp32
+For installation of the esp32 in the Arduino IDE, refer to [How_To_Configure_Arduino-esp32](https://github.com/VIEWESMART/VIEWE-FAQ/blob/main/Arduino-FAQ/English/How_To_Configure_Arduino-esp32.md#install-esp32).
 
+### Installing the Library
 To use this example, please firstly install the following dependent libraries:
 
 - lvgl (>= v8.3.9, < v9)
@@ -14,8 +17,10 @@ To use this example, please firstly install the following dependent libraries:
 
 Follow the steps below to configure:
 
-    `Note`:Since the latest version is still being updated and has not been released, please temporarily use the test version in this repository:`Libraries`->[`ESP32_Display_Panel-bugfix-missing_lcd_load_vendor_config`](https://github.com/VIEWESMART/UEDX46460015-MD50ESP32-1.5inch-Touch-Knob-Display/tree/main/Libraries/ESP32_Display_Panel-bugfix-missing_lcd_load_vendor_config).
-    
+1. For **ESP32_Display_Panel**:
+
+    `Note`:Since the latest version is still being updated and has not been released, please temporarily use the test version in this repository: `Libraries`->[`ESP32_Display_Panel`](https://github.com/VIEWESMART/UEDX46460015-MD50ESP32-1.5inch-Touch-Knob-Display/tree/main/Libraries/ESP32_Display_Panel-bugfix-missing_lcd_load_vendor_config).
+
      - Follow the [steps](https://github.com/VIEWESMART/VIEWE-FAQ/tree/main/Arduino-FAQ/English/How_To_Use.md#configuring-drivers) to configure drivers if needed.
     - If using a supported development board, follow the [steps](https://github.com/VIEWESMART/VIEWE-FAQ/tree/main/Arduino-FAQ/English/How_To_Use.md#using-supported-development-boards) to configure it.
     - If using a custom board, follow the [steps](https://github.com/VIEWESMART/VIEWE-FAQ/tree/main/Arduino-FAQ/English/How_To_Use.md#using-custom-development-boards) to configure it.

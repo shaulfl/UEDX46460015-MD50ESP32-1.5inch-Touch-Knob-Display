@@ -104,8 +104,10 @@ static void LongPressStartCb(void *button_handle, void *usr_data) {
 
 void setup()
 {
+#ifdef KNOB15
     pinMode(17, OUTPUT);
     digitalWrite(17, HIGH);
+#endif
     String title = "LVGL porting example";
 #ifdef IM
     pinMode(IM1, OUTPUT);

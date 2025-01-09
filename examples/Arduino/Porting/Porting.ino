@@ -59,23 +59,6 @@
  */
 #include <demos/lv_demos.h>
 // #include <examples/lv_examples.h>
-#ifdef KNOB21
-#define GPIO_NUM_KNOB_PIN_A     6
-#define GPIO_NUM_KNOB_PIN_B     5
-#define GPIO_BUTTON_PIN         GPIO_NUM_0
-#endif
-#ifdef KNOB13
-#define GPIO_NUM_KNOB_PIN_A     7
-#define GPIO_NUM_KNOB_PIN_B     6
-#define GPIO_BUTTON_PIN         GPIO_NUM_9
-#endif
-#ifdef KNOB15
-#define GPIO_NUM_KNOB_PIN_A     7
-#define GPIO_NUM_KNOB_PIN_B     6
-#define GPIO_BUTTON_PIN         GPIO_NUM_0
-#endif
-
-
 
 /*Initialize UI start*/
 /*Initialize UI end*/

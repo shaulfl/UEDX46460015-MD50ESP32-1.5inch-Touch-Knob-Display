@@ -69,6 +69,11 @@
 #define GPIO_NUM_KNOB_PIN_B     6
 #define GPIO_BUTTON_PIN         GPIO_NUM_9
 #endif
+#ifdef KNOB15
+#define GPIO_NUM_KNOB_PIN_A     7
+#define GPIO_NUM_KNOB_PIN_B     6
+#define GPIO_BUTTON_PIN         GPIO_NUM_0
+#endif
 
 
 

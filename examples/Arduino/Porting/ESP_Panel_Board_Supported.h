@@ -152,8 +152,8 @@ The following products control IM through software
 #elif defined(BOARD_UEDX46460015_MD50E)
 #define KNOB
 #define KNOB15
-#define GPIO_NUM_KNOB_PIN_A     7
-#define GPIO_NUM_KNOB_PIN_B     6
+#define GPIO_NUM_KNOB_PIN_A     6
+#define GPIO_NUM_KNOB_PIN_B     5
 #define GPIO_BUTTON_PIN         GPIO_NUM_0
 #endif
 

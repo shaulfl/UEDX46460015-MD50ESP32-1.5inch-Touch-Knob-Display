@@ -71,7 +71,7 @@
 #ifdef KNOB
 #include <ESP_Knob.h>
 #include <Button.h>
-#include <ui.h>
+// #include <ui.h>
 
 ESP_Knob *knob;
 void onKnobLeftEventCallback(int count, void *usr_data)

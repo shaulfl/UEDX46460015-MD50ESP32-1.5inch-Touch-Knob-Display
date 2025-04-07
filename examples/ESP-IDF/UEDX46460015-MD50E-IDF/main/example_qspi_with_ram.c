@@ -20,82 +20,27 @@
 
 #include "lvgl.h"
 #include "lv_demos.h"
-
 #include "iot_knob.h"
 #include "iot_button.h"
-
-
 
 //************** */
 #include "led_strip.h"
 #include "esp_log.h"
 #include "esp_err.h"
 
-
-#define HF_ws2812  1
-
-#if  HF_ws2812
-// GPIO assignment
-#define LED_STRIP_BLINK_GPIO  21
-// Numbers of the LED in the strip
-#define LED_STRIP_LED_NUMBERS 8
-// 10MHz resolution, 1 tick = 0.1us (led strip needs a high resolution)
-#define LED_STRIP_RMT_RES_HZ  (10 * 1000 * 1000)
-extern void ui_init(void);
-static const char *TAG = "example";
-  led_strip_handle_t led_strip=NULL;
-led_strip_handle_t configure_led(void)
-{
-    // LED strip general initialization, according to your led board design
-    led_strip_config_t strip_config = {
-        .strip_gpio_num = LED_STRIP_BLINK_GPIO,   // The GPIO that connected to the LED strip's data line
-        .max_leds = LED_STRIP_LED_NUMBERS,        // The number of LEDs in the strip,
-        .led_pixel_format = LED_PIXEL_FORMAT_GRB, // Pixel format of your LED strip
-        .led_model = LED_MODEL_WS2812,            // LED strip model
-        .flags.invert_out = false,                // whether to invert the output signal
-    };
-
-    // LED strip backend configuration: RMT
-    led_strip_rmt_config_t rmt_config = {
-#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
-        .rmt_channel = 0,
-#else
-        .clk_src = RMT_CLK_SRC_DEFAULT,        // different clock source can lead to different power consumption
-        .resolution_hz = LED_STRIP_RMT_RES_HZ, // RMT counter clock frequency
-        .flags.with_dma = false,               // DMA feature is available on ESP target like ESP32-S3
-#endif
-    };
-
-    // LED Strip object handle
-    led_strip_handle_t led_strip;
-    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
-    ESP_LOGI(TAG, "Created LED strip object with RMT backend");
-    return led_strip;
-}
-#endif
 //***************** */
 
-extern  esp_err_t lvgl_port_indev_init(void);
+// extern  esp_err_t lvgl_port_indev_init(void);
 
 //*************************************************** */
 
 #define  CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601   1
-#if CONFIG_EXAMPLE_LCD_CONTROLLER_SPD2010
-#include "esp_lcd_spd2010.h"
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_GC9B71
-#include "esp_lcd_gc9b71.h"
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
-#include "esp_lcd_sh8601.h"
-#endif
-
 #include "esp_lcd_sh8601.h"
 #define   CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S  1
-#if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_SPD2010
-#include "esp_lcd_touch_spd2010.h"
-#elif CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
 #include "esp_lcd_touch_cst816s.h"
-#endif
-#include "esp_lcd_touch_cst816s.h"
+
+extern void ui_init(void);
+static const char *TAG = "example";
 
 static SemaphoreHandle_t lvgl_mux = NULL;
 
@@ -115,14 +60,7 @@ static SemaphoreHandle_t lvgl_mux = NULL;
 #define EXAMPLE_PIN_NUM_BK_LIGHT          (GPIO_NUM_17)
 
 // The pixel number in horizontal and vertical
-#define CONFIG_EXAMPLE_LCD_CONTROLLER_SPD2010 0
-#if CONFIG_EXAMPLE_LCD_CONTROLLER_SPD2010
-#define EXAMPLE_LCD_H_RES              412
-#define EXAMPLE_LCD_V_RES              412
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_GC9B71
-#define EXAMPLE_LCD_H_RES              320
-#define EXAMPLE_LCD_V_RES              386
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
+#if CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
 #define EXAMPLE_LCD_H_RES             471// 466
 #define EXAMPLE_LCD_V_RES             466// 466
 #endif
@@ -164,6 +102,46 @@ typedef enum {
 #define EXAMPLE_LVGL_TASK_MIN_DELAY_MS 2
 #define EXAMPLE_LVGL_TASK_STACK_SIZE   (4 * 1024)
 #define EXAMPLE_LVGL_TASK_PRIORITY     2
+
+#define HF_ws2812  1
+
+#if  HF_ws2812
+// GPIO assignment
+#define LED_STRIP_BLINK_GPIO  21
+// Numbers of the LED in the strip
+#define LED_STRIP_LED_NUMBERS 8
+// 10MHz resolution, 1 tick = 0.1us (led strip needs a high resolution)
+#define LED_STRIP_RMT_RES_HZ  (10 * 1000 * 1000)
+  led_strip_handle_t led_strip=NULL;
+led_strip_handle_t configure_led(void)
+{
+    // LED strip general initialization, according to your led board design
+    led_strip_config_t strip_config = {
+        .strip_gpio_num = LED_STRIP_BLINK_GPIO,   // The GPIO that connected to the LED strip's data line
+        .max_leds = LED_STRIP_LED_NUMBERS,        // The number of LEDs in the strip,
+        .led_pixel_format = LED_PIXEL_FORMAT_GRB, // Pixel format of your LED strip
+        .led_model = LED_MODEL_WS2812,            // LED strip model
+        .flags.invert_out = false,                // whether to invert the output signal
+    };
+
+    // LED strip backend configuration: RMT
+    led_strip_rmt_config_t rmt_config = {
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
+        .rmt_channel = 0,
+#else
+        .clk_src = RMT_CLK_SRC_DEFAULT,        // different clock source can lead to different power consumption
+        .resolution_hz = LED_STRIP_RMT_RES_HZ, // RMT counter clock frequency
+        .flags.with_dma = false,               // DMA feature is available on ESP target like ESP32-S3
+#endif
+    };
+
+    // LED Strip object handle
+    led_strip_handle_t led_strip;
+    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
+    ESP_LOGI(TAG, "Created LED strip object with RMT backend");
+    return led_strip;
+}
+#endif
 
 static bool example_notify_lvgl_flush_ready(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx)
 {
@@ -246,11 +224,6 @@ void example_lvgl_rounder_cb(struct _lv_disp_drv_t *disp_drv, lv_area_t *area)
     // round the end of coordinate up to the nearest 2N+1 number
     area->x2 = ((x2 >> 1) << 1) + 1;
     area->y2 = ((y2 >> 1) << 1) + 1;
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_SPD2010
-    // round the start of coordinate down to the nearest 4M number
-    area->x1 = (x1 >> 2) << 2;
-    // round the end of coordinate up to the nearest 4N+3 number
-    area->x2 = ((x2 >> 2) << 2) + 3;
 #endif
 }
 
@@ -337,54 +310,15 @@ static void example_lvgl_port_task(void *arg)
     }
 }
 
-#if CONFIG_EXAMPLE_LCD_CONTROLLER_GC9B71
-// static const gc9b71_lcd_init_cmd_t lcd_init_cmds[] = {
-// //  {cmd, { data }, data_size, delay_ms}
-//    {0xfe, (uint8_t []){0x00}, 0, 0},
-//    {0xef, (uint8_t []){0x00}, 0, 0},
-//    {0x80, (uint8_t []){0x11}, 1, 0},
-//    {0x81, (uint8_t []){0x70}, 1, 0},
-//     ...
-// };
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_SPD2010
-// static const spd2010_lcd_init_cmd_t lcd_init_cmds[] = {
-// //  {cmd, { data }, data_size, delay_ms}
-//    {0xFF, (uint8_t []){0x20, 0x10, 0x10}, 3, 0},
-//    {0x0C, (uint8_t []){0x11}, 1, 0},
-//    {0x10, (uint8_t []){0x02}, 1, 0},
-//    {0x11, (uint8_t []){0x11}, 1, 0},
-//     ...
-// };
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
-// static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
-// //  {cmd, { data }, data_size, delay_ms}
-//    {0x44, (uint8_t []){0x00, 0xc8}, 2, 0},
-//    {0x35, (uint8_t []){0x00}, 0, 0},
-//    {0x53, (uint8_t []){0x20}, 1, 25},
-//    {0x29, (uint8_t []){0x00}, 0, 120},
-//     ...
-// };
+#if CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
 #define  R151ASM  0    //1  是新的那个     0是旧的那个
 static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
 //1.32 inch AMOLED from DWO LIMITED
 // Part number: DO0132FMST01-QSPI 
-// Size: 1.32 inch
+// Size: 1.5 inch
 // Resolution: 466x466
 // Signal interface:  QSPI 
-//For more product information, please visit www.dwo.net.cn
     #if  R151ASM
-    //HF
-    // {0x11, (uint8_t []){0x00}, 0, 60},
-    // {0x2A, (uint8_t []){0x00,0x00,0x01,0xD1}, 4, 0},
-    // {0x2B, (uint8_t []){0x00,0x00,0x01,0xD1}, 4, 0},
-    // {0x44, (uint8_t []){0x01,0xD1}, 2, 0},
-    // {0x35, (uint8_t []){0x00}, 1, 0},
-    // {0x36, (uint8_t []){0x00}, 1, 0},
-    // {0x3A, (uint8_t []){0x55}, 1, 0},
-    // {0x53, (uint8_t []){0x20}, 1, 60},  
-    // {0x29, (uint8_t []){0x00}, 0, 0},
-
-
     {0xFE, (uint8_t []){0x00}, 0, 0},   
     {0xC4, (uint8_t []){0x80}, 1, 0},
     {0x3A, (uint8_t []){0x55}, 1, 0},
@@ -397,11 +331,6 @@ static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
    
     {0x11, (uint8_t []){0x00}, 0, 60},
     {0x29, (uint8_t []){0x00}, 0, 0},
-
-
-    
-
-    
 
     #else
     //HF
@@ -419,12 +348,6 @@ static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
     {0x11, (uint8_t []){0x00}, 0, 60},
     {0x29, (uint8_t []){0x00}, 0, 0},
     #endif
-
-
-
-
-
-
 };
 #endif
 
@@ -565,15 +488,7 @@ void app_main(void)
     #endif
     ESP_LOGI(TAG, "Initialize SPI bus");
     const spi_bus_config_t buscfg =
-#if CONFIG_EXAMPLE_LCD_CONTROLLER_GC9B71
-        GC9B71_PANEL_BUS_QSPI_CONFIG(EXAMPLE_PIN_NUM_LCD_PCLK, EXAMPLE_PIN_NUM_LCD_DATA0,
-                                     EXAMPLE_PIN_NUM_LCD_DATA1, EXAMPLE_PIN_NUM_LCD_DATA2,
-                                     EXAMPLE_PIN_NUM_LCD_DATA3, EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * LCD_BIT_PER_PIXEL / 8);
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_SPD2010
-        SPD2010_PANEL_BUS_QSPI_CONFIG(EXAMPLE_PIN_NUM_LCD_PCLK, EXAMPLE_PIN_NUM_LCD_DATA0,
-                                      EXAMPLE_PIN_NUM_LCD_DATA1, EXAMPLE_PIN_NUM_LCD_DATA2,
-                                      EXAMPLE_PIN_NUM_LCD_DATA3, EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * LCD_BIT_PER_PIXEL / 8);
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
+#if CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
         SH8601_PANEL_BUS_QSPI_CONFIG(EXAMPLE_PIN_NUM_LCD_PCLK, EXAMPLE_PIN_NUM_LCD_DATA0,
                                      EXAMPLE_PIN_NUM_LCD_DATA1, EXAMPLE_PIN_NUM_LCD_DATA2,
                                      EXAMPLE_PIN_NUM_LCD_DATA3, EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * LCD_BIT_PER_PIXEL / 8);
@@ -583,25 +498,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Install panel IO");
     esp_lcd_panel_io_handle_t io_handle = NULL;
     const esp_lcd_panel_io_spi_config_t io_config =
-#if CONFIG_EXAMPLE_LCD_CONTROLLER_GC9B71
-        GC9B71_PANEL_IO_QSPI_CONFIG(EXAMPLE_PIN_NUM_LCD_CS, example_notify_lvgl_flush_ready, &disp_drv);
-    gc9b71_vendor_config_t vendor_config = {
-        // .init_cmds = lcd_init_cmds,         // Uncomment these line if use custom initialization commands
-        // .init_cmds_size = sizeof(lcd_init_cmds) / sizeof(gc9b71_lcd_init_cmd_t),
-        .flags = {
-            .use_qspi_interface = 1,
-        },
-    };
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_SPD2010
-        SPD2010_PANEL_IO_QSPI_CONFIG(EXAMPLE_PIN_NUM_LCD_CS, example_notify_lvgl_flush_ready, &disp_drv);
-    spd2010_vendor_config_t vendor_config = {
-        // .init_cmds = lcd_init_cmds,         // Uncomment these line if use custom initialization commands
-        // .init_cmds_size = sizeof(lcd_init_cmds) / sizeof(spd2010_lcd_init_cmd_t),
-        .flags = {
-            .use_qspi_interface = 1,
-        },
-    };
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
+#if CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
         SH8601_PANEL_IO_QSPI_CONFIG(EXAMPLE_PIN_NUM_LCD_CS, example_notify_lvgl_flush_ready, &disp_drv);
     sh8601_vendor_config_t vendor_config = {
         .init_cmds = lcd_init_cmds,         // Uncomment these line if use custom initialization commands
@@ -622,11 +519,7 @@ void app_main(void)
         .vendor_config = &vendor_config,
     };
     ESP_LOGI(TAG, "Install LCD driver");
-#if CONFIG_EXAMPLE_LCD_CONTROLLER_GC9B71
-    ESP_ERROR_CHECK(esp_lcd_new_panel_gc9b71(io_handle, &panel_config, &panel_handle));
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_SPD2010
-    ESP_ERROR_CHECK(esp_lcd_new_panel_spd2010(io_handle, &panel_config, &panel_handle));
-#elif CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
+#if CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
     ESP_ERROR_CHECK(esp_lcd_new_panel_sh8601(io_handle, &panel_config, &panel_handle));
 #endif
 
@@ -649,9 +542,7 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_driver_install(EXAMPLE_TOUCH_HOST, i2c_conf.mode, 0, 0, 0));
 
     esp_lcd_panel_io_handle_t tp_io_handle = NULL;
-#if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_SPD2010
-    const esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_SPD2010_CONFIG();
-#elif CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
+#if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
     const esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_CST816S_CONFIG();
 #endif
     // Attach the TOUCH to the I2C bus
@@ -678,15 +569,10 @@ void app_main(void)
     };
 
     ESP_LOGI(TAG, "Initialize touch controller");
-#if CONFIG_EXAMPLE_LCD_CONTROLLER_SPD2010
-  //  ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_spd2010(tp_io_handle, &tp_cfg, &tp));
-#elif CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
+#if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
     ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816s(tp_io_handle, &tp_cfg, &tp));
 #endif
 #endif // CONFIG_EXAMPLE_LCD_TOUCH_ENABLED
-
-
-
 
     if (EXAMPLE_PIN_NUM_BK_LIGHT >= 0) {
         ESP_LOGI(TAG, "HF --Turn on LCD backlight");
@@ -738,21 +624,11 @@ void app_main(void)
     (void)disp;
 #endif
 
-
-  
-
     #if HF_ws2812
     led_strip = configure_led();
     #endif   
-
-
     knob_init(BSP_ENCODER_A, BSP_ENCODER_B);
     button_init(BSP_BTN_PRESS);
-   
-
-
- 
-
     lvgl_mux = xSemaphoreCreateMutex();
     assert(lvgl_mux);
     xTaskCreate(example_lvgl_port_task, "LVGL", EXAMPLE_LVGL_TASK_STACK_SIZE, NULL, EXAMPLE_LVGL_TASK_PRIORITY, NULL);
@@ -760,16 +636,13 @@ void app_main(void)
     ESP_LOGI(TAG, "Display LVGL demos");
     // Lock the mutex due to the LVGL APIs are not thread-safe
     if (example_lvgl_lock(-1)) {
-
-     
-
         ui_init();
   
         // lv_demo_widgets();      /* A widgets example */
         //lv_demo_music();        /* A modern, smartphone-like music player demo. */
         // lv_demo_stress();       /* A stress test for LVGL. */
         // lv_demo_benchmark();    /* A demo to measure the performance of LVGL or to compare different settings. */
-
+       
         // Release the mutex
         example_lvgl_unlock();
     }

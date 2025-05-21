@@ -30,7 +30,6 @@
 | UEDX46460015-MD50E   | ESP32S3R8 |   16M   | 8M (Octal SPI) | [VIEWE Mall](https://viewedisplay.com/product/esp32-7-inch-800x480-rgb-ips-tft-display-touch-screen-arduino-lvgl-uart/)  |
 
 ## Directory
-- [Describe](#describe)
 - [Module](#module)
 - [PinOverview](#pinoverview)
 - [QuickStart](#quickstart)
@@ -38,10 +37,6 @@
 - [Schematic](#Schematic)
 - [Information](#information)
 - [DependentLibraries](#dependentlibraries)
-
-## Describe
-
-UEDX48480021-MD80ESP32_2.1inch-Knob-Display is a development board with square 2.1-inch 480 * 480 resolution display, based on ESP32S3, suitable for the development of microcontroller projects with display.
 
 
 ## Module

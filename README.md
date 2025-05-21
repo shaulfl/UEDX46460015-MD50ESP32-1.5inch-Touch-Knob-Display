@@ -21,13 +21,13 @@
 ## Version iteration:
 |   Development board Version   |  Screen size   |   Resolution  | Update date        |Update description|
 | :-------------------------------: | :-------------------------------: | :-------------------------------: | :-------------------------------: |:-------------------------------: |
-| UEDX46460015-MD50E | 2.1-inch |  466*466  |2024-07-23      | Original version   |
+| UEDX46460015-MD50E | 1.5-inch |  466*466  |2024-07-23      | Original version   |
 
 ## PurchaseLink
 
 | Product                     | SOC           |  FLASH  |  PSRAM   | Link                   |
 | :------------------------: | :-----------: |:-------: | :---------: | :------------------: |
-| UEDX46460015-MD50E   | ESP32S3R8 |   16M   | 8M (Octal SPI) | [VIEWE Mall](https://viewedisplay.com/product/esp32-7-inch-800x480-rgb-ips-tft-display-touch-screen-arduino-lvgl-uart/)  |
+| UEDX46460015-MD50E   | ESP32S3R8 |   16M   | 8M (Octal SPI) | [VIEWE Mall]()  |
 
 ## Directory
 - [Module](#module)
@@ -50,7 +50,7 @@
 
 ### 2. Screen
 
-* Size: 2.1-inch IPS screen
+* Size: 1.5-inch IPS screen
 * Resolution: 466x466px
 * Screen type: IPS
 * Driver chip: CO5300AF-42
@@ -103,7 +103,7 @@
 | Example | Support IDE And Version| Description | Picture |
 | ------  | ------  | ------ | ------ | 
 | [ESP-IDF](./examples/ESP-IDF) | `[ESP-IDF V5.1/5.2/5.3]` | idf driver example code |  |
-| [SquareLinePorting](./examples/SquareLinePorting) | `[Arduino IDE][esp32_v2.0.14]` | SquareLine porting example for Arduino |  |
+| [SquareLinePorting](./examples/SquareLinePorting) | `[Arduino IDE][esp32_v3.0.6 above]` | SquareLine porting example for Arduino |  |
 
 
 | Firmware | Description | Picture |

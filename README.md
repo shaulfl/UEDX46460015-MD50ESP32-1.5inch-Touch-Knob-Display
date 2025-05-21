@@ -78,7 +78,7 @@ UEDX48480021-MD80ESP32_2.1inch-Knob-Display is a development board with square 2
 |   DATA2       |  IO14   |
 |   DATA3       |  IO9   |
 | RST        | IO8       |
-| BACKLIGHT  | IO7       |
+| BACKLIGHT  | IO17       |
 
 | Touch Pin  | ESP32S3 Pin|
 | :------------------: | :------------------:|

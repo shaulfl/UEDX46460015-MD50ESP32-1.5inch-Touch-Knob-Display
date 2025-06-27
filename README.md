@@ -123,37 +123,27 @@
 
 ### Arduino
 1. Install[Arduino](https://www.arduino.cc/en/software),Choose installation based on your system type.
-
-2. Open the "example" directory within the project folder, select the example project folder, and open the file ending with ".ino" to open the Arduino IDE project workspace.
-
-3. Open the "Tools" menu at the top right -> Select "Board" -> "Board Manager." Find or search for "esp32" and download the board files from the author named "Espressif Systems." Then, go back to the "Board" menu and select the development board type under "ESP32 Arduino." The selected development board type should match the one specified in the "platformio.ini" file under the [env] section with the header "board = xxx." If there is no corresponding development board, you may need to manually add the development board from the "board" directory within your project folder.
-
-4. Open menu bar "[File](image/6.png)" -> "[Preferences](image/6.png)" ,Find "[Sketchbook location](image/7.png)"  here,copy and paste all library files and folders from the "libraries" folder in the project directory into the "libraries" folder in this directory.
-
-5. Select the correct settings in the Tools menu, as shown in the table below.
-
-#### ESP32-S3
-| Setting                               | Value                                 |
-| :-------------------------------: | :-------------------------------: |
-| Board                                 | ESP32S3 Dev Module           |
-| CPU Frequency                   | 240MHz (WiFi)                    |
-| Core Debug Level                | None                                 |
-| USB CDC On Boot                | Disabled                              |
-| USB DFU On Boot                | Disabled                             |
-| Events Run On                     | Core 1                               |  
-| Flash Mode                         | QIO 80MHz                         |
-| Flash Size                           | 16MB (128Mb)                    |
-| Arduino Runs On                  | Core 1                               |
-| USB Firmware MSC On Boot | Disabled                             |
-| Partition Scheme                | 16M Flash (3MB APP/9.9MB FATFS) |
-| PSRAM                                | OPI PSRAM                         |
-| Upload Mode                     |     UART0/Hardware CDC            |
-| Upload Speed                     | 921600                               |
-| USB Mode                           | Hardware CDC and JTAG     |
-
-6. Select the correct port.
-
-7. Click "<kbd>[√](image/8.png)</kbd>" in the upper right corner to compile,If the compilation is correct, connect the microcontroller to the computer,Click "<kbd>[→](image/9.png)</kbd>" in the upper right corner to download.
+2. Install the ESP32 core: Search for and download `esp32`(by Espressif >= v3.0.9) in the `Board Manager`.
+3. Install the required libraries:
+    * Please use our published test [Libraries](https://github.com/VIEWESMART/UEDX46460015-MD50ESP32-1.5inch-Touch-Knob-Display/tree/main/Libraries) temporarily
+4. Open the example: `ESP32_Display_Panel`-> `examples` -> `arduino` -> `gui` -> `lvgl_v8`.
+5. Configure the `esp_panel_board_supported_conf.h` file:
+    * Enable the macro: `#define ESP_PANEL_BOARD_DEFAULT_USE_SUPPORTED  (1)`
+    * Uncomment the corresponding screen model definition: `#define BOARD_VIEWE_UEDX46460015_ET`
+6. Configure tool options :
+    #### ESP32-S3
+    | Setting                               | Value                         |
+    | :-------------------------------: | :-------------------------------: |
+    | Board                                 | ESP32S3 Dev Module            |
+    | Core Debug Level                | None                                |
+    | USB CDC On Boot                | Disabled                             |
+    | USB DFU On Boot                | Disabled                             |
+    | Flash Size                           | 16MB (128Mb)                   |
+    | Partition Scheme                | 16M Flash (3MB APP/9.9MB FATFS)     |
+    | PSRAM                                | OPI PSRAM                      |
+   
+7. Select the correct port.
+8. Click "<kbd>[√](image/8.png)</kbd>" in the upper right corner to compile,If the compilation is correct, connect the microcontroller to the computer,Click "<kbd>[→](image/9.png)</kbd>" in the upper right corner to download.
 
 ### firmware download
 1. Open the project file "tools" and locate the ESP32 burning tool. Open it.

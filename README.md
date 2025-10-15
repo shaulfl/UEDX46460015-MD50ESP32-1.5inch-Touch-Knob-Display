@@ -96,6 +96,21 @@
 | USB-DN         | IO19      |
 | USB-DP         | IO20      |
 
+## FPC PIN
+| FPC number | Adapter Pin  | ESP32S3 Pin|
+| :------------------: | :------------------: | :------------------:|
+|  1  |    5V      |    5V    |
+|  2  |    PB7     |  -   |
+|  3  |    GND     |    GND   |
+|  4  |    RX2     |    GPIO40    |
+|  5  |    TX2     |    GPIO39    |
+|  6  |    RX1     |    UART0RXD/GPIO44    |
+|  7  |    TX1     |    UART0TXD/GPIO43    |
+|  8  |     NC     |    CHIP-EN    |
+|  9  |   SK & D+   |   USB-DP/ GPIO20    |
+|  10 |   SD & D-   |    USB-DN/ GPIO19   |
+
+
 ## QuickStart
 
 ### Examples Support

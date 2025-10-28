@@ -104,6 +104,12 @@ void set_source_index(int idx) {
         lv_obj_t *btn = lv_obj_get_child(objects.source_select, 0);
         if (btn) {
             set_button_label_text_safe(btn, g_source_vals[g_source_index]);
+            /* Expand redraw scope for knob-driven updates to avoid one-frame clipped/faint text */
+            lv_obj_invalidate(btn);
+            lv_obj_t *parent = lv_obj_get_parent(btn);
+            if (parent) {
+                lv_obj_invalidate(parent);
+            }
         }
     }
 }
@@ -122,6 +128,12 @@ void set_filter_index(int idx) {
         lv_obj_t *btn = lv_obj_get_child(objects.filter_select, 0);
         if (btn) {
             set_button_label_text_safe(btn, g_filter_vals[g_filter_index]);
+            /* Expand redraw scope for knob-driven updates to avoid one-frame clipped/faint text */
+            lv_obj_invalidate(btn);
+            lv_obj_t *parent = lv_obj_get_parent(btn);
+            if (parent) {
+                lv_obj_invalidate(parent);
+            }
         }
     }
 }

@@ -47,18 +47,62 @@ static int g_volume_value = 100; /* percent 0-100 */
 /* Track last arc value to skip unnecessary updates */
 static int last_arc_value = -1;
 
+static lv_obj_t *get_audio_control_button(lv_obj_t *container) {
+    if (!container) {
+        return NULL;
+    }
+    if (lv_obj_get_child_cnt(container) == 0) {
+        return NULL;
+    }
+    return lv_obj_get_child(container, 0);
+}
+
+static lv_obj_t *get_audio_control_arc(lv_obj_t *container) {
+    lv_obj_t *btn = get_audio_control_button(container);
+    if (!btn) {
+        return NULL;
+    }
+    if (lv_obj_get_child_cnt(btn) == 0) {
+        return NULL;
+    }
+    return lv_obj_get_child(btn, 0);
+}
+
+static lv_obj_t *get_audio_control_label(lv_obj_t *container) {
+    lv_obj_t *btn = get_audio_control_button(container);
+    if (!btn) {
+        return NULL;
+    }
+    uint32_t child_count = lv_obj_get_child_cnt(btn);
+    if (child_count == 0) {
+        return NULL;
+    }
+    return lv_obj_get_child(btn, child_count - 1);
+}
+
 void set_volume_value(int value) {
     g_volume_value = value;
     if (objects.volume_meter) {
-        /* The volume label is the last child of the inner button; reuse helper to set it */
         char buf[32];
         snprintf(buf, sizeof(buf), "%d", g_volume_value);
-        /* inner button is child 0 of container */
-        lv_obj_t *btn = lv_obj_get_child(objects.volume_meter, 0);
+        lv_obj_t *btn = get_audio_control_button(objects.volume_meter);
         if (btn) {
             set_button_label_text_safe(btn, buf);
+            if (!objects.volume_label) {
+                lv_obj_t *label = get_audio_control_label(objects.volume_meter);
+                if (label) {
+                    objects.volume_label = label;
+                }
+            }
         }
-        
+    }
+
+    if (objects.volume_inner_arc == NULL) {
+        objects.volume_inner_arc = get_audio_control_arc(objects.volume_meter);
+    }
+    if (objects.volume_inner_arc) {
+        lv_arc_set_value(objects.volume_inner_arc, value);
+        lv_obj_invalidate(objects.volume_inner_arc);
     }
     
     /* Update the big arc if needed */
@@ -203,6 +247,40 @@ void create_screen_main() {
         objects.volume_meter = create_audio_control(parent_obj, 163, 286, "100", &ui_font_inter_bold_58);
         objects.source_select = create_audio_control(parent_obj, 163 , 44, g_source_vals[0], &ui_font_inter_bold_32);
         objects.filter_select = create_audio_control(parent_obj, 286 , 163, g_filter_vals[0], &ui_font_inter_bold_32);
+ 
+        /* Cache inner arcs (best-effort). We'll log the results to help diagnose missing arcs. */
+        objects.volume_inner_arc = get_audio_control_arc(objects.volume_meter);
+        objects.source_inner_arc = get_audio_control_arc(objects.source_select);
+        objects.filter_inner_arc = get_audio_control_arc(objects.filter_select);
+        objects.volume_label = get_audio_control_label(objects.volume_meter);
+ 
+        /* Debug: report which arcs were found */
+        ESP_LOGI("ui", "Inner arcs: volume=%p source=%p filter=%p label=%p",
+                 (void*)objects.volume_inner_arc, (void*)objects.source_inner_arc, (void*)objects.filter_inner_arc, (void*)objects.volume_label);
+ 
+        /* Make volume inner arc reflect current volume as before */
+        if (objects.volume_inner_arc) {
+            lv_arc_set_value(objects.volume_inner_arc, g_volume_value);
+        }
+ 
+        /* User requested: make SOURCE and FILTER indicator part use the whole arc (visually fill).
+         * We set the INDICATOR arc width to a large value (equal to the arc's displayed diameter)
+         * so it appears as a filled ring rather than a thin indicator stroke.
+         *
+         * This is a best-effort adjustment; if the inner arc wasn't found we skip silently.
+         */
+        if (objects.source_inner_arc) {
+            /* Use a large indicator width (~full arc size). 130 chosen from button_size - margin used in create_audio_control */
+            lv_obj_set_style_arc_width(objects.source_inner_arc, 130, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+            /* Keep the track (MAIN) stroke thin so indicator appears prominent */
+            lv_obj_set_style_arc_width(objects.source_inner_arc, 8, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_invalidate(objects.source_inner_arc);
+        }
+        if (objects.filter_inner_arc) {
+            lv_obj_set_style_arc_width(objects.filter_inner_arc, 130, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+            lv_obj_set_style_arc_width(objects.filter_inner_arc, 8, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_invalidate(objects.filter_inner_arc);
+        }
 
         /* Attach click handlers to the container objects so existing click feedback
          * remains (the container's inner button still changes color). */
@@ -304,6 +382,10 @@ void delete_screen_main() {
     objects.bitrate = 0;
     objects.khz = 0;
     objects.format = 0;
+    objects.volume_label = 0;
+    objects.volume_inner_arc = 0;
+    objects.source_inner_arc = 0;
+    objects.filter_inner_arc = 0;
     
     // Nothing special to reset
 }
@@ -387,7 +469,7 @@ void tick_screen_by_id(enum ScreensEnum screenId) {
     lv_obj_set_size(arc, arcSize, arcSize);
     /* center the arc inside the button */
     lv_obj_set_style_align(arc, LV_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_arc_set_value(arc, 0);
+    lv_arc_set_value(arc, 100);
     lv_arc_set_bg_start_angle(arc, 20);
     lv_arc_set_bg_end_angle(arc, 340);
     lv_arc_set_rotation(arc, 90);
@@ -395,12 +477,13 @@ void tick_screen_by_id(enum ScreensEnum screenId) {
     lv_obj_set_style_bg_opa(arc, 0, LV_PART_KNOB | LV_STATE_DEFAULT);
     /* thinner arc stroke to look like a ring inside the button */
     lv_obj_set_style_arc_width(arc, arcThickness, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_width(arc, arcThickness, LV_PART_INDICATOR | LV_STATE_DEFAULT);
     
     /* Improved arc styling */
     lv_obj_set_style_arc_rounded(arc, true, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_rounded(arc, true, LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_color(arc, lv_color_hex(0xff444444), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_color(arc, lv_color_hex(0xff00ff00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(arc, lv_color_hex(0xff2a2a2a), LV_PART_INDICATOR | LV_STATE_DEFAULT);
     
     /* Ensure proper layering - arc behind button content */
     lv_obj_move_background(arc);
@@ -464,31 +547,14 @@ static void big_arc_event_cb(lv_event_t * e) {
      * We defensively check for objects.volume_meter and iterate children to find arcs.
      */
     if (objects.volume_meter) {
-        /* invalidate the container */
         lv_obj_invalidate(objects.volume_meter);
+    }
 
-        /* inner button is child 0 of container */
-        lv_obj_t *btn = lv_obj_get_child(objects.volume_meter, 0);
-        if (btn) {
-            lv_obj_invalidate(btn);
-            /* find inner arc (child 0 of the button in this UI) and invalidate it too */
-            if (lv_obj_get_child_cnt(btn) > 0) {
-                lv_obj_t *possible_arc = lv_obj_get_child(btn, 0);
-                if (possible_arc) {
-#ifdef LV_USE_OBJ_GET_TYPE
-                    /* Best-effort: only invalidate if it's an arc */
-                    if (lv_obj_get_class(possible_arc) == &lv_arc_class) {
-                        lv_obj_invalidate(possible_arc);
-                    } else {
-                        lv_obj_invalidate(possible_arc);
-                    }
-#else
-                    /* Without type checks, just invalidate the first child (safe fallback) */
-                    lv_obj_invalidate(possible_arc);
-#endif
-                }
-            }
-        }
+    if (!objects.volume_inner_arc) {
+        objects.volume_inner_arc = get_audio_control_arc(objects.volume_meter);
+    }
+    if (objects.volume_inner_arc) {
+        lv_obj_invalidate(objects.volume_inner_arc);
     }
 
     /* Avoid calling lv_tick_inc() from event callbacks — LVGL tick should be driven from a timer/RTOS tick.

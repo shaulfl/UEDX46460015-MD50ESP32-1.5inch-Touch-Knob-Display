@@ -85,11 +85,103 @@ static bool g_ui_debug_enabled = false;
 
 static const char *g_control_item_names[] = { "VOLUME", "SOURCE", "FILTER" };
 
+#define AUDIO_CTRL_ARC_BASE_WIDTH 8
+#define AUDIO_CTRL_ARC_SELECTION_WIDTH 10
+#define AUDIO_CTRL_ARC_EDIT_WIDTH 12
+
+static void apply_arc_visual(lv_obj_t *arc, lv_color_t track_color, lv_color_t indicator_color, int main_width, int indicator_width) {
+    if (!arc) {
+        return;
+    }
+    lv_obj_set_style_arc_color(arc, track_color, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(arc, indicator_color, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_width(arc, main_width, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_width(arc, indicator_width, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_invalidate(arc);
+}
+
+static void clear_button_border(lv_obj_t *btn) {
+    if (!btn) {
+        return;
+    }
+    lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0xff000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_invalidate(btn);
+}
+
+static void fallback_border_highlight(lv_obj_t *btn, lv_color_t color, int width) {
+    if (!btn) {
+        return;
+    }
+    lv_obj_set_style_border_width(btn, width, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(btn, color, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0xff000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_invalidate(btn);
+}
+
+static lv_obj_t *get_control_container_by_index(int index) {
+    switch (index) {
+        case CONTROL_ITEM_VOLUME:
+            return objects.volume_meter;
+        case CONTROL_ITEM_SOURCE:
+            return objects.source_select;
+        case CONTROL_ITEM_FILTER:
+            return objects.filter_select;
+        default:
+            return NULL;
+    }
+}
+
+static lv_obj_t **get_arc_slot_by_index(int index) {
+    switch (index) {
+        case CONTROL_ITEM_VOLUME:
+            return &objects.volume_inner_arc;
+        case CONTROL_ITEM_SOURCE:
+            return &objects.source_inner_arc;
+        case CONTROL_ITEM_FILTER:
+            return &objects.filter_inner_arc;
+        default:
+            return NULL;
+    }
+}
+
+static lv_obj_t *get_control_button_by_index(int index) {
+    lv_obj_t *container = get_control_container_by_index(index);
+    if (!container || lv_obj_get_child_cnt(container) == 0) {
+        return NULL;
+    }
+    return lv_obj_get_child(container, 0);
+}
+
+static lv_obj_t *ensure_control_arc_by_index(int index) {
+    lv_obj_t **arc_slot = get_arc_slot_by_index(index);
+    if (arc_slot && *arc_slot) {
+        return *arc_slot;
+    }
+
+    lv_obj_t *btn = get_control_button_by_index(index);
+    if (!btn || lv_obj_get_child_cnt(btn) == 0) {
+        return NULL;
+    }
+
+    lv_obj_t *arc = lv_obj_get_child(btn, 0);
+    if (arc_slot) {
+        *arc_slot = arc;
+    }
+    return arc;
+}
+
 static void update_selection_deadline_ms(void) {
     g_selection_deadline_ms = esp_timer_get_time() / 1000 + g_selection_timeout_ms;
     if (g_ui_debug_enabled) {
         ESP_LOGI("ui", "Selection deadline set to %lld ms (timeout %u)", g_selection_deadline_ms, g_selection_timeout_ms);
     }
+}
+
+/* Defer heavy LVGL style changes to the LVGL task context to avoid WDT on btn_consumer */
+static void async_highlight_cb(void *p) {
+    int idx = (int)(intptr_t)p;
+    ui_highlight_control(idx);
 }
 
 void ui_debug_enable(bool enable) {
@@ -103,42 +195,70 @@ void ui_set_selection_timeout_ms(uint32_t ms) {
 }
 
 /* Highlight a control container (or clear when control_index < 0).
- * We operate on the inner button (child 0) of each container to avoid touching layout.
+ * Emphasize the inner decorative arc rather than the button border.
  *
  * Visual rules:
- * - In SELECTION mode: light grey ring (subtle hover).
- * - In EDIT mode: green ring to indicate active editing.
+ * - In SELECTION mode: inner arc indicator becomes light grey.
+ * - In EDIT mode:      inner arc indicator becomes green.
+ * - When cleared:      inner arc indicator returns to its default muted color.
+ *
+ * If an inner arc cannot be located (e.g., layout changed), we fall back to the legacy
+ * border-based highlight.
  */
 void ui_highlight_control(int control_index) {
-    lv_obj_t *containers[CONTROL_ITEM_COUNT] = {
-        objects.volume_meter,
-        objects.source_select,
-        objects.filter_select
-    };
+    const lv_color_t default_track_color = lv_color_hex(0xff444444);
+    const lv_color_t default_indicator_color = lv_color_hex(0xff444444);
+    const lv_color_t selection_indicator_color = lv_color_hex(0xffaaaaaa);
+    const lv_color_t edit_indicator_color = lv_color_hex(0xcdcdcdcd);
 
     for (int i = 0; i < CONTROL_ITEM_COUNT; ++i) {
-        lv_obj_t *c = containers[i];
-        if (!c) continue;
-        lv_obj_t *btn = lv_obj_get_child(c, 0);
-        if (!btn) continue;
+        lv_obj_t *container = get_control_container_by_index(i);
+        if (!container) {
+            continue;
+        }
+
+        lv_obj_t *btn = get_control_button_by_index(i);
+        lv_obj_t *arc = ensure_control_arc_by_index(i);
 
         if (control_index == i) {
-            /* Choose style depending on current control state */
-            if (g_control_state == CONTROL_STATE_EDIT) {
-                /* EDIT state: green ring, slightly stronger background tint */
-                lv_obj_set_style_border_width(btn, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
-                lv_obj_set_style_border_color(btn, lv_color_hex(0xff00ff00), LV_PART_MAIN | LV_STATE_DEFAULT);
-                lv_obj_set_style_bg_color(btn, lv_color_hex(0xff111111), LV_PART_MAIN | LV_STATE_DEFAULT);
+            if (arc) {
+                lv_color_t indicator_color = (g_control_state == CONTROL_STATE_EDIT)
+                                             ? edit_indicator_color
+                                             : selection_indicator_color;
+                int indicator_width = (g_control_state == CONTROL_STATE_EDIT)
+                                      ? AUDIO_CTRL_ARC_EDIT_WIDTH
+                                      : AUDIO_CTRL_ARC_SELECTION_WIDTH;
+
+                apply_arc_visual(arc,
+                                 default_track_color,
+                                 indicator_color,
+                                 AUDIO_CTRL_ARC_BASE_WIDTH,
+                                 indicator_width);
+            } else if (btn) {
+                /* Fallback when the decorative arc is missing */
+                int border_width = (g_control_state == CONTROL_STATE_EDIT) ? 4 : 3;
+                lv_color_t border_color = (g_control_state == CONTROL_STATE_EDIT)
+                                          ? edit_indicator_color
+                                          : selection_indicator_color;
+                fallback_border_highlight(btn, border_color, border_width);
             } else {
-                /* SELECTION (or other) state: light grey ring and subtle bg */
-                lv_obj_set_style_border_width(btn, 3, LV_PART_MAIN | LV_STATE_DEFAULT);
-                lv_obj_set_style_border_color(btn, lv_color_hex(0xffcccccc), LV_PART_MAIN | LV_STATE_DEFAULT);
-                lv_obj_set_style_bg_color(btn, lv_color_hex(0xff0f0f0f), LV_PART_MAIN | LV_STATE_DEFAULT);
+                continue;
             }
         } else {
-            /* Clear highlight */
-            lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_bg_color(btn, lv_color_hex(0xff000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+            if (arc) {
+                apply_arc_visual(arc,
+                                 default_track_color,
+                                 default_indicator_color,
+                                 AUDIO_CTRL_ARC_BASE_WIDTH,
+                                 AUDIO_CTRL_ARC_BASE_WIDTH);
+            }
+            if (btn) {
+                clear_button_border(btn);
+            }
+        }
+
+        if (container) {
+            lv_obj_invalidate(container);
         }
     }
 
@@ -160,7 +280,8 @@ void ui_enter_selection_mode(void) {
     /* Start selection on SOURCE to cycle through all three controls */
     g_selected_control_index = CONTROL_ITEM_SOURCE;
     update_selection_deadline_ms();
-    ui_highlight_control(g_selected_control_index);
+    /* Defer highlight to LVGL task to avoid long style refresh in btn_consumer context */
+    lv_async_call(async_highlight_cb, (void *)(intptr_t)g_selected_control_index);
     ESP_LOGI("ui", "Entered SELECTION mode (start on SOURCE)");
 }
 
@@ -170,14 +291,8 @@ void ui_confirm_selection(void) {
         g_control_state = CONTROL_STATE_EDIT;
         update_selection_deadline_ms();
         ESP_LOGI("ui", "Confirmed selection -> EDIT for %s", g_control_item_names[g_selected_control_index]);
-        /* Ensure LVGL updates happen under the port lock if available so the green ring appears immediately */
-#ifdef lvgl_port_lock
-        lvgl_port_lock(0);
-#endif
-        ui_highlight_control(g_selected_control_index); /* will render green ring in EDIT state */
-#ifdef lvgl_port_unlock
-        lvgl_port_unlock();
-#endif
+        /* Defer style updates to LVGL task to prevent WDT on btn_consumer core */
+        lv_async_call(async_highlight_cb, (void *)(intptr_t)g_selected_control_index);
         return;
     }
     if (g_control_state == CONTROL_STATE_EDIT) {
@@ -191,7 +306,8 @@ void ui_confirm_selection(void) {
 void ui_cancel_selection_mode(void) {
     if (g_control_state == CONTROL_STATE_NORMAL) return;
     g_control_state = CONTROL_STATE_NORMAL;
-    ui_highlight_control(-1);
+    /* Clear highlight asynchronously as well */
+    lv_async_call(async_highlight_cb, (void *)(intptr_t)-1);
     ESP_LOGI("ui", "Selection cancelled -> NORMAL");
 }
 

@@ -18,6 +18,10 @@ typedef struct _objects_t {
     lv_obj_t *format;
     /* Label inside the volume control's button so the displayed numeric value can be updated. */
     lv_obj_t *volume_label;
+    /* Cached decorative arcs for faster highlight updates. */
+    lv_obj_t *volume_inner_arc;
+    lv_obj_t *source_inner_arc;
+    lv_obj_t *filter_inner_arc;
 } objects_t;
 
 extern objects_t objects;

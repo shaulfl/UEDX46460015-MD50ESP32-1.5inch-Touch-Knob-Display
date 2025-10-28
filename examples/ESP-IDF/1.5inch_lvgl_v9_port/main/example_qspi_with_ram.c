@@ -64,7 +64,8 @@ static const char *TAG = "example";
  */
 static void ui_tick_task(void *arg) {
     (void)arg;
-    const TickType_t period = pdMS_TO_TICKS(20); /* 50 Hz */
+    /* Speed up UI servicing to reduce perceived knob latency */
+    const TickType_t period = pdMS_TO_TICKS(10); /* 100 Hz */
     uint32_t iter = 0;
     for (;;) {
         /* Call ui_tick() without holding lvgl_port_lock here.
@@ -388,8 +389,9 @@ void process_knob_events(void)
 {
     if (!knob_event_pending) return;
 
-    /* Take a snapshot of accumulated delta, then process only a small burst per tick
-     * to avoid long LVGL-critical sections and WDT under fast rotations.
+    /* Take a snapshot of accumulated delta, then process only a bounded burst per tick
+     * to avoid long LVGL-critical sections and WDT under fast rotations, while improving
+     * responsiveness vs single-step-per-tick.
      */
     int32_t d_total;
     portENTER_CRITICAL(&knob_spinlock);
@@ -402,83 +404,84 @@ void process_knob_events(void)
         return;
     }
 
-    /* Limit per-tick work: apply at most BURST steps of +/-1 each tick.
-     * Remaining delta is returned to the accumulator for subsequent ticks.
+    /* Apply at most a bounded net number of steps per tick. Coalesce LVGL work into a single call.
+     * Adaptive burst tuned for snappier feel:
+     * - small turns: up to BASE_BURST steps
+     * - large turns: apply roughly half in one tick, clamped to +/-MAX_BURST
      */
-    const int BURST = 3;
-    int applied = 0;
+    const int BASE_BURST = 10;
+    const int MAX_BURST  = 24;
+    int step_count = d_total;
+    if (step_count > BASE_BURST) {
+        step_count = (step_count > (BASE_BURST * 2)) ? (step_count / 2) : BASE_BURST;
+        if (step_count > MAX_BURST) step_count = MAX_BURST;
+    } else if (step_count < -BASE_BURST) {
+        step_count = (step_count < -(BASE_BURST * 2)) ? (step_count / 2) : -BASE_BURST;
+        if (step_count < -MAX_BURST) step_count = -MAX_BURST;
+    }
 
-    /* Derive a single step (-1 or +1) to apply this tick */
-    int step = (d_total > 0) ? 1 : -1;
-
-    ESP_LOGI(TAG, "Processing knob: total=%d, step=%d, ui_state=%d", (int)d_total, step, (int)g_control_state);
+    ESP_LOGD(TAG, "Processing knob: total=%d, apply=%d, ui_state=%d", (int)d_total, step_count, (int)g_control_state);
 
     if (g_control_state == CONTROL_STATE_SELECTION) {
-        /* Only move the highlight by one control per tick to keep UI responsive */
-        int new_index = g_selected_control_index + step;
-
-        /* Wrap around all three controls */
+        /* Move highlight by up to |step_count| with a single highlight update */
+        int new_index = g_selected_control_index + step_count;
         while (new_index < 0) new_index += CONTROL_ITEM_COUNT;
         new_index = new_index % CONTROL_ITEM_COUNT;
 
-        g_selected_control_index = new_index;
-        ESP_LOGI(TAG, "SELECTION -> selected_control=%d", g_selected_control_index);
-
-        lvgl_port_lock(0);
-        ui_highlight_control(g_selected_control_index);
-        lvgl_port_unlock();
-
-        applied = 1;
+        if (new_index != g_selected_control_index) {
+            g_selected_control_index = new_index;
+            ESP_LOGD(TAG, "SELECTION -> selected_control=%d", g_selected_control_index);
+            lvgl_port_lock(0);
+            ui_highlight_control(g_selected_control_index);
+            lvgl_port_unlock();
+        }
     } else if (g_control_state == CONTROL_STATE_EDIT) {
-        /* Edit the selected control by small steps per tick */
         if (g_selected_control_index == CONTROL_ITEM_VOLUME) {
             int current_volume = get_volume_value();
-            int new_volume = current_volume + step;
+            int new_volume = current_volume + step_count;
             if (new_volume < 0) new_volume = 0;
             if (new_volume > 100) new_volume = 100;
             if (new_volume != current_volume) {
-                ESP_LOGI(TAG, "EDIT[VOLUME] -> %d -> %d", current_volume, new_volume);
+                ESP_LOGD(TAG, "EDIT[VOLUME] -> %d -> %d", current_volume, new_volume);
                 lvgl_port_lock(0);
                 set_volume_value(new_volume);
                 lvgl_port_unlock();
             }
         } else if (g_selected_control_index == CONTROL_ITEM_SOURCE) {
             int cur = get_source_index();
-            ESP_LOGI(TAG, "EDIT[SOURCE] -> %d + %d", cur, step);
+            int new_idx = cur + step_count;
+            ESP_LOGD(TAG, "EDIT[SOURCE] -> %d -> %d (delta=%d)", cur, new_idx, step_count);
             lvgl_port_lock(0);
-            set_source_index(cur + step);
+            set_source_index(new_idx);
             lvgl_port_unlock();
         } else if (g_selected_control_index == CONTROL_ITEM_FILTER) {
             int cur = get_filter_index();
-            ESP_LOGI(TAG, "EDIT[FILTER] -> %d + %d", cur, step);
+            int new_idx = cur + step_count;
+            ESP_LOGD(TAG, "EDIT[FILTER] -> %d -> %d (delta=%d)", cur, new_idx, step_count);
             lvgl_port_lock(0);
-            set_filter_index(cur + step);
+            set_filter_index(new_idx);
             lvgl_port_unlock();
         } else {
             ESP_LOGI(TAG, "EDIT -> unknown selected_control %d", g_selected_control_index);
         }
-        applied = 1;
     } else {
-        /* NORMAL state: volume nudge by one per tick for smoothness */
+        /* NORMAL state: coalesce multiple volume steps into one set */
         int current_volume = get_volume_value();
-        int new_volume = current_volume + step;
+        int new_volume = current_volume + step_count;
         if (new_volume < 0) new_volume = 0;
         if (new_volume > 100) new_volume = 100;
         if (new_volume != current_volume) {
-            ESP_LOGI(TAG, "NORMAL -> volume %d -> %d", current_volume, new_volume);
+            ESP_LOGD(TAG, "NORMAL -> volume %d -> %d (delta=%d)", current_volume, new_volume, step_count);
             lvgl_port_lock(0);
             set_volume_value(new_volume);
             lvgl_port_unlock();
         } else {
             ESP_LOGD(TAG, "NORMAL -> volume unchanged (%d)", current_volume);
         }
-        applied = 1;
     }
 
-    /* Return any remaining delta to the accumulator and keep the pending flag set
-     * so the next ui_tick() will process the rest in small bursts.
-     */
-    int32_t remaining = d_total - (applied * step);
+    /* Return remaining (if any) for future ticks */
+    int32_t remaining = d_total - step_count;
     if (remaining != 0) {
         portENTER_CRITICAL(&knob_spinlock);
         knob_accum += remaining;

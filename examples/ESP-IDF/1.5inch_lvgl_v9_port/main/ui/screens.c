@@ -10,13 +10,11 @@
 #include "styles.h"
 #include "ui.h"
 
-// Include system monitoring
-#include "system_monitor.h"
-
 // Include ESP-IDF headers
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
+#include "esp_log.h"
 
 
 /* Forward declaration: helper that safely sets the last-child label text of a button-like object.
@@ -48,11 +46,6 @@ static int g_volume_value = 100; /* percent 0-100 */
 
 /* Track last arc value to skip unnecessary updates */
 static int last_arc_value = -1;
-
-/* System monitoring labels */
-static lv_obj_t *fps_label = NULL;
-static lv_obj_t *cpu_label = NULL;
-static lv_obj_t *ram_label = NULL;
 
 void set_volume_value(int value) {
     g_volume_value = value;
@@ -104,8 +97,8 @@ static int g_filter_index = 0;
 
 /* Set source/input index (0..g_source_count-1) and update UI */
 void set_source_index(int idx) {
-    if (idx < 0) idx = 0;
-    if (idx >= g_source_count) idx = g_source_count - 1;
+    if (idx < 0) idx = 3;
+    if (idx >= g_source_count) idx = 0;
     g_source_index = idx;
     if (objects.source_select) {
         lv_obj_t *btn = lv_obj_get_child(objects.source_select, 0);
@@ -122,8 +115,8 @@ int get_source_index(void) {
 
 /* Set filter index (0..g_filter_count-1) and update UI */
 void set_filter_index(int idx) {
-    if (idx < 0) idx = 0;
-    if (idx >= g_filter_count) idx = g_filter_count - 1;
+    if (idx < 0) idx = 3;
+    if (idx >= g_filter_count) idx = 0;
     g_filter_index = idx;
     if (objects.filter_select) {
         lv_obj_t *btn = lv_obj_get_child(objects.filter_select, 0);
@@ -286,40 +279,6 @@ void create_screen_main() {
         }
     }
     
-    // Create system info labels
-    {
-        lv_obj_t *info_container = lv_obj_create(objects.main);
-        lv_obj_set_pos(info_container, 133, 10);  // Center horizontally
-        lv_obj_set_size(info_container, 200, 120);  // Make taller vertically
-        lv_obj_set_style_bg_color(info_container, lv_color_hex(0x00000000), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_width(info_container, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_radius(info_container, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_layout(info_container, LV_LAYOUT_FLEX, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_flex_flow(info_container, LV_FLEX_FLOW_COLUMN, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_pad_all(info_container, 5, LV_PART_MAIN | LV_STATE_DEFAULT);
-        
-        // FPS label
-        fps_label = lv_label_create(info_container);
-        lv_obj_set_style_text_color(fps_label, lv_color_hex(0xff0000), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_text_font(fps_label, &ui_font_inter_bold_26, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_label_set_text(fps_label, "FPS: 0");
-        
-        // CPU label
-        cpu_label = lv_label_create(info_container);
-        lv_obj_set_style_text_color(cpu_label, lv_color_hex(0xff0000), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_text_font(cpu_label, &ui_font_inter_bold_26, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_label_set_text(cpu_label, "CPU: 0%");
-        
-        // RAM label
-        ram_label = lv_label_create(info_container);
-        lv_obj_set_style_text_color(ram_label, lv_color_hex(0xff0000), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_text_font(ram_label, &ui_font_inter_bold_26, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_label_set_text(ram_label, "RAM: 0.0%");
-    }
-    
-    // Initialize system monitor
-    system_monitor_init();
-    
     tick_screen_main();
 }
 
@@ -334,13 +293,12 @@ void delete_screen_main() {
     objects.khz = 0;
     objects.format = 0;
     
-    // Reset system monitor
-    system_monitor_reset();
+    // Nothing special to reset
 }
 
 /* Hover behavior removed. tick_screen_main is now a no-op. */
 void tick_screen_main() {
-    system_monitor_update(fps_label, cpu_label, ram_label);
+    /* removed system monitoring updates */
 }
 
 
@@ -628,14 +586,86 @@ static void filter_click_cb(lv_event_t * e) {
 
 /* Advance to next value (swipe right) */
 void audio_ctrl_next(lv_obj_t *btn) {
-    /* Use unified cycle function with automatic detection. */
-    audio_ctrl_cycle_values_btn(btn, NULL, 0, +1);
+    if (!btn) return;
+    /* If this button belongs to the volume container, treat as volume adjust */
+    lv_obj_t *parent = lv_obj_get_parent(btn);
+    if (parent == objects.volume_meter) {
+        int cur = get_volume_value();
+        int next = cur + 1;
+        if (next > 100) next = 100;
+        ESP_LOGI("ui", "audio_ctrl_next -> VOLUME %d -> %d", cur, next);
+        set_volume_value(next);
+        return;
+    }
+
+    /* Try to detect by label text (source / filter) */
+    int32_t cnt = lv_obj_get_child_cnt(btn);
+    if (cnt <= 0) return;
+    lv_obj_t *lbl = lv_obj_get_child(btn, cnt - 1);
+    if (!lbl) return;
+    const char *txt = lv_label_get_text(lbl);
+    if (!txt) return;
+
+    for (int i = 0; i < g_source_count; ++i) {
+        if (strcmp(txt, g_source_vals[i]) == 0) {
+            int next = (i + 1) % g_source_count;
+            ESP_LOGI("ui", "audio_ctrl_next -> SOURCE %d -> %d", i, next);
+            set_source_index(next);
+            return;
+        }
+    }
+
+    for (int i = 0; i < g_filter_count; ++i) {
+        if (strcmp(txt, g_filter_vals[i]) == 0) {
+            int next = (i + 1) % g_filter_count;
+            ESP_LOGI("ui", "audio_ctrl_next -> FILTER %d -> %d", i, next);
+            set_filter_index(next);
+            return;
+        }
+    }
+
+    ESP_LOGI("ui", "audio_ctrl_next: unknown control");
 }
 
 /* Go to previous value (swipe left) */
 void audio_ctrl_prev(lv_obj_t *btn) {
-    /* Use unified cycle function with automatic detection. */
-    audio_ctrl_cycle_values_btn(btn, NULL, 0, -1);
+    if (!btn) return;
+    lv_obj_t *parent = lv_obj_get_parent(btn);
+    if (parent == objects.volume_meter) {
+        int cur = get_volume_value();
+        int next = cur - 1;
+        if (next < 0) next = 0;
+        ESP_LOGI("ui", "audio_ctrl_prev -> VOLUME %d -> %d", cur, next);
+        set_volume_value(next);
+        return;
+    }
+
+    int32_t cnt = lv_obj_get_child_cnt(btn);
+    if (cnt <= 0) return;
+    lv_obj_t *lbl = lv_obj_get_child(btn, cnt - 1);
+    if (!lbl) return;
+    const char *txt = lv_label_get_text(lbl);
+    if (!txt) return;
+
+    for (int i = 0; i < g_source_count; ++i) {
+        if (strcmp(txt, g_source_vals[i]) == 0) {
+            int next = (i - 1 + g_source_count) % g_source_count;
+            ESP_LOGI("ui", "audio_ctrl_prev -> SOURCE %d -> %d", i, next);
+            set_source_index(next);
+            return;
+        }
+    }
+
+    for (int i = 0; i < g_filter_count; ++i) {
+        if (strcmp(txt, g_filter_vals[i]) == 0) {
+            int next = (i - 1 + g_filter_count) % g_filter_count;
+            ESP_LOGI("ui", "audio_ctrl_prev -> FILTER %d -> %d", i, next);
+            set_filter_index(next);
+            return;
+        }
+    }
+
+    ESP_LOGI("ui", "audio_ctrl_prev: unknown control");
 }
 
 /* Gesture event handler: change control value on left/right swipe.
@@ -655,13 +685,83 @@ static void audio_ctrl_gesture_cb(lv_event_t * e) {
     lv_indev_t *act = lv_indev_get_act();
     if (!act) return;
     lv_dir_t dir = lv_indev_get_gesture_dir(act);
-    if (dir == LV_DIR_RIGHT) {
-        audio_ctrl_cycle_values_btn(btn, NULL, 0, +1);
-    } else if (dir == LV_DIR_LEFT) {
-        audio_ctrl_cycle_values_btn(btn, NULL, 0, -1);
-    } else {
-        /* ignore other directions */
+
+    int delta = 0;
+    if (dir == LV_DIR_RIGHT) delta = +1;
+    else if (dir == LV_DIR_LEFT) delta = -1;
+    else return;
+
+    ESP_LOGI("ui", "audio_ctrl_gesture_cb: dir=%d state=%d selected=%d", dir, (int)g_control_state, g_selected_control_index);
+
+    if (g_control_state == CONTROL_STATE_SELECTION) {
+        /* Cycle selected control */
+        int new_index = g_selected_control_index + delta;
+        while (new_index < 0) new_index += CONTROL_ITEM_COUNT;
+        new_index = new_index % CONTROL_ITEM_COUNT;
+        g_selected_control_index = new_index;
+        ESP_LOGI("ui", "SELECTION gesture -> selected_control=%d", g_selected_control_index);
+        ui_highlight_control(g_selected_control_index);
         return;
     }
+
+    if (g_control_state == CONTROL_STATE_EDIT) {
+        /* Edit the currently selected control */
+        if (g_selected_control_index == CONTROL_ITEM_VOLUME) {
+            int cur = get_volume_value();
+            int next = cur + delta;
+            if (next < 0) next = 0;
+            if (next > 100) next = 100;
+            set_volume_value(next);
+            ESP_LOGI("ui", "EDIT[VOLUME] gesture -> %d -> %d", cur, next);
+        } else if (g_selected_control_index == CONTROL_ITEM_SOURCE) {
+            int cur = get_source_index();
+            int next = (cur + delta + g_source_count) % g_source_count;
+            set_source_index(next);
+            ESP_LOGI("ui", "EDIT[SOURCE] gesture -> %d -> %d", cur, next);
+        } else if (g_selected_control_index == CONTROL_ITEM_FILTER) {
+            int cur = get_filter_index();
+            int next = (cur + delta + g_filter_count) % g_filter_count;
+            set_filter_index(next);
+            ESP_LOGI("ui", "EDIT[FILTER] gesture -> %d -> %d", cur, next);
+        } else {
+            ESP_LOGI("ui", "EDIT gesture -> unknown selected_control %d", g_selected_control_index);
+        }
+        return;
+    }
+
+    /* NORMAL state: perform the default behavior (cycle values / adjust volume) */
+    lv_obj_t *parent = lv_obj_get_parent(btn);
+    if (parent == objects.volume_meter) {
+        int cur = get_volume_value();
+        int next = cur + delta;
+        if (next < 0) next = 0;
+        if (next > 100) next = 100;
+        set_volume_value(next);
+        ESP_LOGI("ui", "NORMAL gesture -> volume %d -> %d", cur, next);
+        return;
+    }
+
+    const char *txt = lv_label_get_text(lbl);
+    if (txt) {
+        for (int i = 0; i < g_source_count; ++i) {
+            if (strcmp(txt, g_source_vals[i]) == 0) {
+                int next = (i + delta + g_source_count) % g_source_count;
+                set_source_index(next);
+                ESP_LOGI("ui", "NORMAL gesture -> SOURCE %d -> %d", i, next);
+                return;
+            }
+        }
+        for (int i = 0; i < g_filter_count; ++i) {
+            if (strcmp(txt, g_filter_vals[i]) == 0) {
+                int next = (i + delta + g_filter_count) % g_filter_count;
+                set_filter_index(next);
+                ESP_LOGI("ui", "NORMAL gesture -> FILTER %d -> %d", i, next);
+                return;
+            }
+        }
+    }
+
+    ESP_LOGI("ui", "NORMAL gesture -> unknown control");
+    return;
 }
 

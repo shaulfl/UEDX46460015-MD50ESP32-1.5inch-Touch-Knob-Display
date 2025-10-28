@@ -44,6 +44,12 @@ lv_obj_t *create_audio_control(lv_obj_t *parent, int32_t x, int32_t y, const cha
 void set_volume_value(int value);
 int get_volume_value(void);
 
+// Source/filter accessors (exposed so input layer can modify them)
+void set_source_index(int idx);
+int get_source_index(void);
+void set_filter_index(int idx);
+int get_filter_index(void);
+
 /* External hooks for platform-level input events (knob/button) */
 void LVGL_knob_event(void *event);
 void LVGL_button_event(void *event);

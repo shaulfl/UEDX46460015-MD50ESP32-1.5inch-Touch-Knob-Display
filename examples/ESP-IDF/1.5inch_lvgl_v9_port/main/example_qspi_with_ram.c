@@ -1,3 +1,5 @@
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 /*
  * SPDX-FileCopyrightText: 2023-2024 Espressif Systems (Shanghai) CO LTD
  *
@@ -25,6 +27,16 @@
 #include "iot_button.h"
 #include "ui/ui.h"
 #include "ui/screens.h"
+#include "ui/ui_events.h"
+
+/* Forward declarations for UI control accessors (ensure no implicit-decls during build) */
+int get_source_index(void);
+void set_source_index(int idx);
+int get_filter_index(void);
+void set_filter_index(int idx);
+
+/* Button event table is defined later in this translation unit; forward it for logging usage */
+extern const char *button_event_table[];
 
 //************** */
 #include "led_strip.h"
@@ -303,75 +315,152 @@ const char *knob_event_table[] = {
     "KNOB_ZERO",
 };
 
+/* Synthetic event codes for knob events to avoid enum collisions with button events.
+ * These values are intentionally high to not overlap with existing button_event_t values.
+ */
+#define EVT_KNOB_LEFT  1001
+#define EVT_KNOB_RIGHT 1002
+
 void   LVGL_knob_event(void *event)
 {
     knob_event_t knob_event = (knob_event_t)event;
-    
-    ESP_LOGI(TAG, "Knob event received: %s", knob_event_table[(knob_event_t)event]);
-    
-    switch (knob_event) {
-        case KNOB_RIGHT:
-            knob_direction = -1;  // Right turn decreases volume
-            knob_event_pending = true;
-            ESP_LOGI(TAG, "Setting knob_direction to RIGHT (-1) - Volume DOWN");
-            break;
-        case KNOB_LEFT:
-            knob_direction = 1;   // Left turn increases volume
-            knob_event_pending = true;
-            ESP_LOGI(TAG, "Setting knob_direction to LEFT (1) - Volume UP");
-            break;
-        case KNOB_H_LIM:
-            ESP_LOGI(TAG, "Maximum volume reached");
-            break;
-        case KNOB_L_LIM:
-            ESP_LOGI(TAG, "Minimum volume reached");
-            break;
-        case KNOB_ZERO:
-            ESP_LOGI(TAG, "Knob at zero position");
-            break;
-        default:
-            break;
-    }
+    /* Always set the legacy flags so the main LVGL task (ui_tick) will process the knob
+     * event via the knob_event_pending path even if the shared queue is consumed by another task.
+     * Then attempt to enqueue a synthetic event into the shared queue for parity with button handling.
+     */
+    int kd = 0;
+    if (knob_event == KNOB_LEFT) kd = 1;
+    else if (knob_event == KNOB_RIGHT) kd = -1;
+
+    /* Set legacy flags unconditionally to guarantee delivery to ui_tick() */
+    knob_direction = kd;
+    knob_event_pending = true;
+
+    /* Promote to INFO to verify delivery in runtime logs (ensures visibility even if log level hides DEBUG). */
+    ESP_LOGI(TAG, "LVGL_knob_event (enqueue): %s (kd=%d ui_state=%d)", knob_event_table[knob_event], kd, (int)g_control_state);
+
+    /* Do NOT enqueue knob events into g_button_queue.
+     * Under fast rotation the queue gets saturated and causes WDT stalls.
+     * We rely solely on the lightweight legacy path (knob_event_pending + knob_direction),
+     * which ui_tick() processes in LVGL context each frame.
+     */
+    (void)g_button_queue; /* intentionally unused for knob events */
+    return;
 }
 
 // Function to process knob events in the main LVGL task
 void process_knob_events(void)
 {
-    if (knob_event_pending) {
-        ESP_LOGI(TAG, "Processing knob event, direction: %d", knob_direction);
-        
-        // Get current volume without LVGL lock first
+    if (!knob_event_pending) return;
+
+    ESP_LOGI(TAG, "Processing knob event, direction=%d, ui_state=%d", knob_direction, (int)g_control_state);
+
+    /* Route knob behavior based on current control state
+     * NOTE: Regular (NORMAL) mode no longer adjusts volume via the knob to avoid interfering
+     * with the new selection/edit flow. Knob only acts in SELECTION and EDIT states.
+     */
+    if (g_control_state == CONTROL_STATE_SELECTION) {
+        /* Selection mode: cycle only between SOURCE and FILTER (skip VOLUME) as requested.
+         * Map selection indices to the SOURCE/FILTER pair while preserving the global
+         * g_selected_control_index so confirming still selects the intended control.
+         */
+        int delta = knob_direction;
+        /* If current selection is VOLUME, move to SOURCE by default when rotating */
+        int sel = g_selected_control_index;
+        if (sel == CONTROL_ITEM_VOLUME) {
+            /* prefer SOURCE as the first selectable when entering selection */
+            sel = CONTROL_ITEM_SOURCE;
+        }
+        /* Compute new selection among SOURCE and FILTER only (indices 1 and 2) */
+        int rel = (sel == CONTROL_ITEM_SOURCE) ? 0 : 1; /* 0 -> SOURCE, 1 -> FILTER */
+        rel += delta;
+        /* wrap between 0..1 */
+        while (rel < 0) rel += 2;
+        rel = rel % 2;
+        g_selected_control_index = (rel == 0) ? CONTROL_ITEM_SOURCE : CONTROL_ITEM_FILTER;
+        ESP_LOGI(TAG, "SELECTION (source/filter only) -> selected_control=%d", g_selected_control_index);
+        /* Highlight under LVGL lock */
+        lvgl_port_lock(0);
+        ui_highlight_control(g_selected_control_index);
+        lvgl_port_unlock();
+    } else if (g_control_state == CONTROL_STATE_EDIT) {
+        /* Edit mode: knob changes the currently selected control's value */
+        if (g_selected_control_index == CONTROL_ITEM_VOLUME) {
+            int current_volume = get_volume_value();
+            int new_volume = current_volume + knob_direction;
+            if (new_volume < 0) new_volume = 0;
+            if (new_volume > 100) new_volume = 100;
+            ESP_LOGI(TAG, "EDIT[VOLUME] -> %d -> %d", current_volume, new_volume);
+            lvgl_port_lock(0);
+            set_volume_value(new_volume);
+            lvgl_port_unlock();
+            ESP_LOGI(TAG, "EDIT[VOLUME] -> volume=%d", get_volume_value());
+        } else if (g_selected_control_index == CONTROL_ITEM_SOURCE) {
+            int cur = get_source_index();
+            int next = cur + knob_direction;
+            if (next < 0) next = 0;
+            /* set_source_index clamps to bounds; we rely on it for safety */
+            ESP_LOGI(TAG, "EDIT[SOURCE] -> %d -> %d", cur, next);
+            lvgl_port_lock(0);
+            set_source_index(next);
+            lvgl_port_unlock();
+            ESP_LOGI(TAG, "EDIT[SOURCE] -> source_index=%d", get_source_index());
+        } else if (g_selected_control_index == CONTROL_ITEM_FILTER) {
+            int cur = get_filter_index();
+            int next = cur + knob_direction;
+            if (next < 0) next = 0;
+            ESP_LOGI(TAG, "EDIT[FILTER] -> %d -> %d", cur, next);
+            lvgl_port_lock(0);
+            set_filter_index(next);
+            lvgl_port_unlock();
+            ESP_LOGI(TAG, "EDIT[FILTER] -> filter_index=%d", get_filter_index());
+        } else {
+            ESP_LOGI(TAG, "EDIT -> unknown selected_control %d", g_selected_control_index);
+        }
+    } else {
+        /* NORMAL state: adjust volume directly without entering SELECTION/EDIT.
+         * This makes the knob act as volume control in NORMAL mode as requested.
+         */
         int current_volume = get_volume_value();
-        ESP_LOGI(TAG, "Current volume: %d", current_volume);
-        
-        // Calculate new volume
         int new_volume = current_volume + knob_direction;
-        
-        // Clamp volume between 0 and 100
         if (new_volume < 0) new_volume = 0;
         if (new_volume > 100) new_volume = 100;
-        
-        ESP_LOGI(TAG, "Setting volume to: %d", new_volume);
-        
-        // Update volume with LVGL lock
-        lvgl_port_lock(0);
-        set_volume_value(new_volume);
-        lvgl_port_unlock();
-        
-        ESP_LOGI(TAG, "Volume updated to: %d", get_volume_value());
-        
-        knob_event_pending = false;
-        knob_direction = 0;
+        if (new_volume != current_volume) {
+            ESP_LOGI(TAG, "NORMAL -> adjust volume %d -> %d", current_volume, new_volume);
+#ifdef lvgl_port_lock
+            lvgl_port_lock(0);
+#endif
+            set_volume_value(new_volume);
+#ifdef lvgl_port_unlock
+            lvgl_port_unlock();
+#endif
+        } else {
+            ESP_LOGD(TAG, "NORMAL -> volume unchanged (%d)", current_volume);
+        }
     }
+ 
+    /* clear pending flags */
+    knob_event_pending = false;
+    knob_direction = 0;
 }
 
 // Add a periodic task to ensure knob events are processed
 static void knob_task(void *arg)
 {
+    /* The knob should be processed in the LVGL/main context to avoid calling LVGL APIs
+     * from a worker task (which caused watchdog trips and invalid LVGL access when the
+     * knob was moved quickly). process_knob_events() is invoked from ui_tick() (LVGL
+     * context) when knob_event_pending is set. This task now only polls the hardware
+     * flag (keeps the device responsive) but does NOT call any LVGL functions.
+     */
     while (1) {
         if (knob_event_pending) {
-            ESP_LOGI(TAG, "Knob task detected pending event");
-            process_knob_events();
+            /* Optionally log at DEBUG level only to avoid spamming logs during fast rotations */
+            ESP_LOGD(TAG, "Knob task: event pending, main LVGL task will handle it");
+            /* Do not call process_knob_events() here because it calls LVGL APIs.
+             * ui_tick() will detect knob_event_pending and call process_knob_events()
+             * in the correct context.
+             */
         }
         vTaskDelay(pdMS_TO_TICKS(50)); // Check every 50ms
     }
@@ -379,7 +468,57 @@ static void knob_task(void *arg)
 
  void   LVGL_button_event(void *event)
  {
-    
+     /* Button callbacks may be invoked from timer/ISR contexts (iot_button). Avoid calling
+      * LVGL APIs or UI functions directly here. Instead, enqueue the button event onto
+      * the FreeRTOS queue declared in ui.h so ui_tick() (LVGL/main context) can consume it.
+      */
+     button_event_t bev = (button_event_t)event;
+     ESP_LOGI(TAG, "LVGL_button_event (enqueue): %s (ui_state=%d)", button_event_table[bev], (int)g_control_state);
+  
+     /* Enforce strict 3-step flow: ignore BUTTON_PRESS_REPEAT_DONE so only
+      * BUTTON_SINGLE_CLICK advances selection/edit/apply states.
+      */
+     if (bev == BUTTON_PRESS_REPEAT_DONE) {
+         ESP_LOGI(TAG, "LVGL_button_event: ignoring BUTTON_PRESS_REPEAT_DONE (strict single-click flow)");
+         return;
+     }
+  
+     /* Try to enqueue into the shared FreeRTOS queue (use FromISR variant when possible).
+      * g_button_queue is exposed as an opaque void* so cast it back to QueueHandle_t here.
+      */
+     if (g_button_queue) {
+         QueueHandle_t q = (QueueHandle_t)g_button_queue;
+         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+         /* Prefer the FromISR API for ISR contexts */
+         BaseType_t rc = xQueueSendFromISR(q, &bev, &xHigherPriorityTaskWoken);
+         if (rc == pdTRUE) {
+             /* Successfully enqueued from ISR context */
+             portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+         } else {
+             /* FromISR failed. This commonly means we're not in an ISR or the queue was full.
+              * Try a short blocking send in task context with a small timeout to reduce missed events
+              * when the queue is momentarily full.
+              */
+             TickType_t timeout = pdMS_TO_TICKS(10);
+             rc = xQueueSend(q, &bev, timeout);
+             if (rc == pdTRUE) {
+                 ESP_LOGI(TAG, "LVGL_button_event: enqueued via xQueueSend (timeout %u ms)", (unsigned)pdTICKS_TO_MS(timeout));
+             } else {
+                 /* Log additional diagnostics (queue space) to help debugging */
+                 UBaseType_t free_spaces = uxQueueSpacesAvailable(q);
+                 UBaseType_t messages_waiting = uxQueueMessagesWaiting(q);
+                 ESP_LOGW(TAG, "LVGL_button_event: failed to enqueue (rc=%d). queue free=%u waiting=%u; falling back to legacy store",
+                          (int)rc, (unsigned)free_spaces, (unsigned)messages_waiting);
+                 last_button_event = (int)bev;
+                 button_event_pending = true;
+             }
+         }
+     } else {
+         /* Queue not created yet — fallback to legacy single-event handoff */
+         ESP_LOGW(TAG, "LVGL_button_event: g_button_queue not initialized, using legacy handoff");
+         last_button_event = (int)bev;
+         button_event_pending = true;
+     }
  }
 
 static knob_handle_t knob = NULL;
@@ -482,22 +621,30 @@ void button_init(uint32_t button_num)
 //BOTH THOSE FUNCTIONS ARE A WORKAROUND FOR THE STARTUP GLITCH IN DISPLAY
 // Function to adjust volume once
 static void adjust_volume_once(void) {
-    // Set flag to indicate adjustment has been done
+    // This helper runs in a FreeRTOS task. Do minimal work and always use the LVGL port lock
+    // when touching LVGL objects to avoid reentrancy and watchdog triggers.
     screen_refreshed = true;
-    
-    // Get current volume value
+
     int current_volume = get_volume_value();
-    
-    // Temporarily change volume by -1
+    ESP_LOGI(TAG, "adjust_volume_once: current=%d", current_volume);
+
+    // Decrease volume by 1 under LVGL lock, then yield to allow LVGL ticks to run.
+    lvgl_port_lock(0);
     set_volume_value(current_volume - 1);
-    
-    // Small delay to ensure the change is processed
-    vTaskDelay(pdMS_TO_TICKS(100));
-    
-    // Restore original volume value
+    lvgl_port_unlock();
+
+    // Give LVGL time to process (short delay)
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // Restore original volume under LVGL lock
+    lvgl_port_lock(0);
     set_volume_value(current_volume);
-    
-    ESP_LOGI(TAG, "Volume adjusted by -1 and restored");
+    lvgl_port_unlock();
+
+    // Small delay to ensure the repaint completes and other tasks run
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    ESP_LOGI(TAG, "adjust_volume_once: restored to %d", current_volume);
 }
 
 // Task implementation for volume adjustment
@@ -602,7 +749,8 @@ void app_main(void)
     button_init(BSP_BTN_PRESS);
     
     // Create knob processing task with larger stack size
-    xTaskCreate(knob_task, "knob_task", 4096, NULL, 5, NULL);
+    // Pin input handling (knob) to core 1 to isolate from LVGL (core 0)
+    xTaskCreatePinnedToCore(knob_task, "knob_task", 4096, NULL, 5, NULL, 1);
    
     ESP_LOGI(TAG, "Display custom UI");
     // Lock the mutex due to the LVGL APIs are not thread-safe
@@ -620,6 +768,7 @@ void app_main(void)
     // Adjust the volume after 1 second (only once)
     if (!screen_refreshed) {
         // Create a simple task to handle the volume adjustment
-        xTaskCreate(adjust_volume_task_impl, "adjust_volume", 4096, NULL, 5, NULL);
+        // Pin helper tasks for input handling to core 1 as well
+        xTaskCreatePinnedToCore(adjust_volume_task_impl, "adjust_volume", 4096, NULL, 5, NULL, 1);
     }
 }

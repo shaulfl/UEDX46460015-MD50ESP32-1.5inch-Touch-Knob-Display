@@ -1,0 +1,35 @@
+# Ignore build artifacts anywhere in this submodule
+**/build/
+**/build
+
+# Specific ESP-IDF build outputs
+build/
+bootloader/build/
+bootloader/CMakeFiles/
+bootloader/components/**/build/
+
+# Common build folders
+out/
+dist/
+bin/
+obj/
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+
+# Ignore managed components directories
+managed_components/
+**/managed_components/
+
+# IDE and tool caches
+.vscode/
+.idea/
+*.swp
+
+# Generated binaries and objects
+*.o
+*.elf
+*.bin
+*.map
+*.lst
+*.log

@@ -366,25 +366,18 @@ void process_knob_events(void)
      * with the new selection/edit flow. Knob only acts in SELECTION and EDIT states.
      */
     if (g_control_state == CONTROL_STATE_SELECTION) {
-        /* Selection mode: cycle only between SOURCE and FILTER (skip VOLUME) as requested.
-         * Map selection indices to the SOURCE/FILTER pair while preserving the global
-         * g_selected_control_index so confirming still selects the intended control.
+        /* Selection mode: cycle through all controls including VOLUME.
+         * Allow navigation between VOLUME, SOURCE, and FILTER controls.
          */
         int delta = (int)d;
-        /* If current selection is VOLUME, move to SOURCE by default when rotating */
-        int sel = g_selected_control_index;
-        if (sel == CONTROL_ITEM_VOLUME) {
-            /* prefer SOURCE as the first selectable when entering selection */
-            sel = CONTROL_ITEM_SOURCE;
-        }
-        /* Compute new selection among SOURCE and FILTER only (indices 1 and 2) */
-        int rel = (sel == CONTROL_ITEM_SOURCE) ? 0 : 1; /* 0 -> SOURCE, 1 -> FILTER */
-        rel += delta;
-        /* wrap between 0..1 */
-        while (rel < 0) rel += 2;
-        rel = rel % 2;
-        g_selected_control_index = (rel == 0) ? CONTROL_ITEM_SOURCE : CONTROL_ITEM_FILTER;
-        ESP_LOGI(TAG, "SELECTION (source/filter only) -> selected_control=%d", g_selected_control_index);
+        int new_index = g_selected_control_index + delta;
+        
+        /* Wrap around all three controls */
+        while (new_index < 0) new_index += CONTROL_ITEM_COUNT;
+        new_index = new_index % CONTROL_ITEM_COUNT;
+        
+        g_selected_control_index = new_index;
+        ESP_LOGI(TAG, "SELECTION (all controls) -> selected_control=%d", g_selected_control_index);
         /* Highlight under LVGL lock */
         lvgl_port_lock(0);
         ui_highlight_control(g_selected_control_index);

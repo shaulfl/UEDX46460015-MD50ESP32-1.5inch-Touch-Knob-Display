@@ -24,6 +24,7 @@
 #include "iot_knob.h"
 #include "iot_button.h"
 #include "ui/ui.h"
+#include "ui/screens.h"
 
 //************** */
 #include "led_strip.h"
@@ -290,17 +291,9 @@ static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
 
 //***************The following code is for standardizing the event triggering of rotary encoders and buttons.**************** */
 //**************旋钮********* */
-void   LVGL_knob_event(void *event)
-{
-
-}
-
- void   LVGL_button_event(void *event)
- {
-    
- }
-
-static knob_handle_t knob = NULL;
+// Global variables to store knob events
+static volatile int knob_direction = 0;  // 0=no change, 1=right, -1=left
+static volatile bool knob_event_pending = false;
 
 const char *knob_event_table[] = {
     "KNOB_LEFT",
@@ -309,6 +302,87 @@ const char *knob_event_table[] = {
     "KNOB_L_LIM",
     "KNOB_ZERO",
 };
+
+void   LVGL_knob_event(void *event)
+{
+    knob_event_t knob_event = (knob_event_t)event;
+    
+    ESP_LOGI(TAG, "Knob event received: %s", knob_event_table[(knob_event_t)event]);
+    
+    switch (knob_event) {
+        case KNOB_RIGHT:
+            knob_direction = -1;  // Right turn decreases volume
+            knob_event_pending = true;
+            ESP_LOGI(TAG, "Setting knob_direction to RIGHT (-1) - Volume DOWN");
+            break;
+        case KNOB_LEFT:
+            knob_direction = 1;   // Left turn increases volume
+            knob_event_pending = true;
+            ESP_LOGI(TAG, "Setting knob_direction to LEFT (1) - Volume UP");
+            break;
+        case KNOB_H_LIM:
+            ESP_LOGI(TAG, "Maximum volume reached");
+            break;
+        case KNOB_L_LIM:
+            ESP_LOGI(TAG, "Minimum volume reached");
+            break;
+        case KNOB_ZERO:
+            ESP_LOGI(TAG, "Knob at zero position");
+            break;
+        default:
+            break;
+    }
+}
+
+// Function to process knob events in the main LVGL task
+void process_knob_events(void)
+{
+    if (knob_event_pending) {
+        ESP_LOGI(TAG, "Processing knob event, direction: %d", knob_direction);
+        
+        // Get current volume without LVGL lock first
+        int current_volume = get_volume_value();
+        ESP_LOGI(TAG, "Current volume: %d", current_volume);
+        
+        // Calculate new volume
+        int new_volume = current_volume + knob_direction;
+        
+        // Clamp volume between 0 and 100
+        if (new_volume < 0) new_volume = 0;
+        if (new_volume > 100) new_volume = 100;
+        
+        ESP_LOGI(TAG, "Setting volume to: %d", new_volume);
+        
+        // Update volume with LVGL lock
+        lvgl_port_lock(0);
+        set_volume_value(new_volume);
+        lvgl_port_unlock();
+        
+        ESP_LOGI(TAG, "Volume updated to: %d", get_volume_value());
+        
+        knob_event_pending = false;
+        knob_direction = 0;
+    }
+}
+
+// Add a periodic task to ensure knob events are processed
+static void knob_task(void *arg)
+{
+    while (1) {
+        if (knob_event_pending) {
+            ESP_LOGI(TAG, "Knob task detected pending event");
+            process_knob_events();
+        }
+        vTaskDelay(pdMS_TO_TICKS(50)); // Check every 50ms
+    }
+}
+
+ void   LVGL_button_event(void *event)
+ {
+    
+ }
+
+static knob_handle_t knob = NULL;
 
 static void knob_event_cb(void *arg, void *data)
 {
@@ -500,7 +574,11 @@ void app_main(void)
     };
     ESP_LOGI(TAG, "Install LCD driver");
 #if CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
-    ESP_ERROR_CHECK(esp_lcd_new_panel_sh8601(lcd_io, &panel_config, &lcd_panel));
+    // Temporarily suppress error logging to avoid "swap_xy is not supported" message
+    esp_err_t ret = esp_lcd_new_panel_sh8601(lcd_io, &panel_config, &lcd_panel);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize LCD panel: %s", esp_err_to_name(ret));
+    }
 #endif
 
     ESP_ERROR_CHECK(esp_lcd_panel_reset(lcd_panel));
@@ -522,6 +600,9 @@ void app_main(void)
     #endif   
     knob_init(BSP_ENCODER_A, BSP_ENCODER_B);
     button_init(BSP_BTN_PRESS);
+    
+    // Create knob processing task with larger stack size
+    xTaskCreate(knob_task, "knob_task", 4096, NULL, 5, NULL);
    
     ESP_LOGI(TAG, "Display custom UI");
     // Lock the mutex due to the LVGL APIs are not thread-safe

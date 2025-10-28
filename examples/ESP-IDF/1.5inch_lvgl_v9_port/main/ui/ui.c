@@ -52,6 +52,12 @@ void ui_init() {
 
 void ui_tick() {
     tick_screen(currentScreen);
+    
+    // Check if we need to process knob events
+    extern volatile bool knob_event_pending;
+    if (knob_event_pending) {
+        process_knob_events();
+    }
 }
 
 #endif

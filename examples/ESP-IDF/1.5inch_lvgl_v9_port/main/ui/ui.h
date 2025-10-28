@@ -22,6 +22,9 @@ extern "C" {
 void ui_init();
 void ui_tick();
 
+// Function to process knob events
+void process_knob_events(void);
+
 #if !defined(EEZ_FOR_LVGL)
 void loadScreen(enum ScreensEnum screenId);
 #endif

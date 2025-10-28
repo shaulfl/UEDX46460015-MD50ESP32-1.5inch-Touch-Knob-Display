@@ -10,6 +10,9 @@
 #include "styles.h"
 #include "ui.h"
 
+// Include system monitoring
+#include "system_monitor.h"
+
 
 /* Forward declaration: helper that safely sets the last-child label text of a button-like object.
  * Declared early so other functions that call it before its definition don't trigger implicit-declarations.
@@ -40,6 +43,14 @@ static int g_volume_value = 100; /* percent 0-100 */
 
 /* Track last arc value to skip unnecessary updates */
 static int last_arc_value = -1;
+
+/* FPS tracking variables */
+static uint32_t frame_count = 0;
+static uint64_t last_fps_time = 0;
+static float current_fps = 0.0f;
+static lv_obj_t *fps_label = NULL;
+static lv_obj_t *cpu_label = NULL;
+static lv_obj_t *ram_label = NULL;
 
 void set_volume_value(int value) {
     g_volume_value = value;
@@ -273,6 +284,37 @@ void create_screen_main() {
         }
     }
     
+    // Create system info labels
+    {
+        lv_obj_t *info_container = lv_obj_create(objects.main);
+        lv_obj_set_pos(info_container, 133, 10);  // Center horizontally
+        lv_obj_set_size(info_container, 200, 120);  // Make taller vertically
+        lv_obj_set_style_bg_color(info_container, lv_color_hex(0x00000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(info_container, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(info_container, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_layout(info_container, LV_LAYOUT_FLEX, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_flex_flow(info_container, LV_FLEX_FLOW_COLUMN, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_pad_all(info_container, 5, LV_PART_MAIN | LV_STATE_DEFAULT);
+        
+        // FPS label
+        fps_label = lv_label_create(info_container);
+        lv_obj_set_style_text_color(fps_label, lv_color_hex(0xff0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_text_font(fps_label, &ui_font_inter_bold_26, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_label_set_text(fps_label, "FPS: 0");
+        
+        // CPU label
+        cpu_label = lv_label_create(info_container);
+        lv_obj_set_style_text_color(cpu_label, lv_color_hex(0xff0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_text_font(cpu_label, &ui_font_inter_bold_26, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_label_set_text(cpu_label, "CPU: 0%");
+        
+        // RAM label
+        ram_label = lv_label_create(info_container);
+        lv_obj_set_style_text_color(ram_label, lv_color_hex(0xff0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_text_font(ram_label, &ui_font_inter_bold_26, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_label_set_text(ram_label, "RAM: 0KB");
+    }
+    
     tick_screen_main();
 }
 
@@ -286,11 +328,19 @@ void delete_screen_main() {
     objects.bitrate = 0;
     objects.khz = 0;
     objects.format = 0;
+    
+    // Reset system monitor
+    memset(&system_monitor, 0, sizeof(system_monitor));
+}
+
+/* Update system information display */
+void update_system_info() {
+    system_monitor_update(&system_monitor);
 }
 
 /* Hover behavior removed. tick_screen_main is now a no-op. */
 void tick_screen_main() {
-    /* Intentionally left empty to disable hover cycling. */
+    update_system_info();
 }
 
 

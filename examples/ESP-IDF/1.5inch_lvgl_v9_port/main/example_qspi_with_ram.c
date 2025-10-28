@@ -23,6 +23,7 @@
 #include "lv_demos.h"
 #include "iot_knob.h"
 #include "iot_button.h"
+#include "ui/ui.h"
 
 //************** */
 #include "led_strip.h"
@@ -489,12 +490,12 @@ void app_main(void)
     knob_init(BSP_ENCODER_A, BSP_ENCODER_B);
     button_init(BSP_BTN_PRESS);
    
-    ESP_LOGI(TAG, "Display LVGL demos");
+    ESP_LOGI(TAG, "Display custom UI");
     // Lock the mutex due to the LVGL APIs are not thread-safe
      lvgl_port_lock(0);
-       // ui_init();
-  
-         lv_demo_widgets();      /* A widgets example */
+       ui_init();
+   
+        // lv_demo_widgets();      /* A widgets example */
         //lv_demo_music();        /* A modern, smartphone-like music player demo. */
         // lv_demo_stress();       /* A stress test for LVGL. */
         // lv_demo_benchmark();    /* A demo to measure the performance of LVGL or to compare different settings. */

@@ -9,7 +9,7 @@
 #include "vars.h"
 #include "esp_log.h"
 #include "iot_button.h" /* bring BUTTON_PRESS_* enums into scope for ui_tick() */
-#include "ui_events.h" /* synthetic knob event codes (EVT_KNOB_LEFT/RIGHT) */
+/* ui_events.h removed: knob events are processed via process_knob_events() flag/accumulator only */
 
 /* FreeRTOS includes: include FreeRTOS.h before other freertos headers to satisfy
  * the kernel's include-order requirements.
@@ -19,6 +19,8 @@
 
 /* Forward declaration for knob processing implemented in example_qspi_with_ram.c */
 extern void process_knob_events(void);
+/* Query if knob has pending work; used to defer button transitions while rotating */
+extern bool knob_events_pending(void);
 
 
 
@@ -110,6 +112,20 @@ void ui_set_selection_timeout_ms(uint32_t ms) {
  * - In EDIT mode: green ring to indicate active editing.
  */
 void ui_highlight_control(int control_index) {
+    /* Cache to avoid redundant style churn that can trigger WDT under fast input */
+    static int s_last_highlight = -999;
+    static control_state_t s_last_state = (control_state_t)-1;
+    if (control_index == s_last_highlight && g_control_state == s_last_state) {
+        if (g_ui_debug_enabled) {
+            if (control_index >= 0 && control_index < CONTROL_ITEM_COUNT) {
+                ESP_LOGD("ui", "ui_highlight_control: no-op for %d (state=%d)", control_index, (int)g_control_state);
+            }
+        }
+        return;
+    }
+    s_last_highlight = control_index;
+    s_last_state = g_control_state;
+
     lv_obj_t *containers[CONTROL_ITEM_COUNT] = {
         objects.volume_meter,
         objects.source_select,
@@ -160,7 +176,13 @@ void ui_enter_selection_mode(void) {
     /* Start selection on SOURCE to cycle through all three controls */
     g_selected_control_index = CONTROL_ITEM_SOURCE;
     update_selection_deadline_ms();
+#ifdef lvgl_port_lock
+    lvgl_port_lock(0);
+#endif
     ui_highlight_control(g_selected_control_index);
+#ifdef lvgl_port_unlock
+    lvgl_port_unlock();
+#endif
     ESP_LOGI("ui", "Entered SELECTION mode (start on SOURCE)");
 }
 
@@ -191,7 +213,13 @@ void ui_confirm_selection(void) {
 void ui_cancel_selection_mode(void) {
     if (g_control_state == CONTROL_STATE_NORMAL) return;
     g_control_state = CONTROL_STATE_NORMAL;
+#ifdef lvgl_port_lock
+    lvgl_port_lock(0);
+#endif
     ui_highlight_control(-1);
+#ifdef lvgl_port_unlock
+    lvgl_port_unlock();
+#endif
     ESP_LOGI("ui", "Selection cancelled -> NORMAL");
 }
 
@@ -215,52 +243,8 @@ void ui_apply_selected_control(void) {
     g_control_state = CONTROL_STATE_NORMAL;
 }
 
-static void button_consumer_task(void *arg) {
-    QueueHandle_t q = (QueueHandle_t)g_button_queue;
-    int bev;
-    for (;;) {
-        /* Use a short timeout so we can also service knob pending flag even if no queued events arrive */
-        if (xQueueReceive(q, &bev, pdMS_TO_TICKS(10)) == pdTRUE) {
-            if (g_ui_debug_enabled) {
-                ESP_LOGI("ui", "button_consumer: dequeued event %d", bev);
-            }
-#ifdef lvgl_port_lock
-            lvgl_port_lock(0);
-#endif
-            switch (bev) {
-                case BUTTON_SINGLE_CLICK:
-                    if (g_control_state == CONTROL_STATE_NORMAL) {
-                        ui_enter_selection_mode();
-                    } else {
-                        ui_confirm_selection();
-                    }
-                    break;
-                case EVT_KNOB_LEFT:
-                case EVT_KNOB_RIGHT:
-                    /* If a knob event was enqueued, process it in LVGL context */
-                    process_knob_events();
-                    break;
-                default:
-                    /* ignore other events */
-                    break;
-            }
-#ifdef lvgl_port_unlock
-            lvgl_port_unlock();
-#endif
-        } else {
-            /* No queued event this cycle; still service knob in LVGL context if pending */
-#ifdef lvgl_port_lock
-            lvgl_port_lock(0);
-#endif
-            process_knob_events(); /* returns immediately if nothing pending */
-#ifdef lvgl_port_unlock
-            lvgl_port_unlock();
-#endif
-        }
-        taskYIELD();
-    }
-    vTaskDelete(NULL);
-}
+/* Removed button_consumer_task: event consumption is centralized in ui_tick()
+ * to ensure all LVGL/UI calls occur in the LVGL/main context. */
 
 static lv_obj_t *getLvglObjectFromIndex(int32_t index) {
     if (index == -1) {
@@ -293,30 +277,20 @@ void ui_init() {
     }
     g_button_queue = (void *)s_button_queue;
  
-    /* Create the consumer task at a low priority so it doesn't preempt critical LVGL work.
-     * The actual task implementation lives at file scope to satisfy C rules.
-     */
-    /* Pin the button consumer to core 1 to isolate input handling from LVGL (core 0). */
-    BaseType_t t = xTaskCreatePinnedToCore(
-        button_consumer_task,
-        "btn_consumer",
-        4096 / sizeof(StackType_t), /* stack size (words) */
-        NULL,
-        tskIDLE_PRIORITY + 1,       /* low priority */
-        NULL,
-        1);                         /* core id */
-    if (t != pdPASS) {
-        ESP_LOGW("ui", "Failed to create button_consumer_task (rc=%d)", (int)t);
-    } else {
-        ESP_LOGI("ui", "button_consumer_task created and pinned to core 1");
-    }
+    /* Removed separate consumer task; ui_tick() will drain the queue in LVGL context */
 
     create_screens();
     loadScreen(SCREEN_ID_MAIN);
 }
 
 void ui_tick() {
+#ifdef lvgl_port_lock
+    lvgl_port_lock(0);
+#endif
     tick_screen(currentScreen);
+#ifdef lvgl_port_unlock
+    lvgl_port_unlock();
+#endif
 
     /* Handle selection timeout (cancels selection/edit when expired) */
     if (g_control_state != CONTROL_STATE_NORMAL) {
@@ -342,39 +316,40 @@ void ui_tick() {
         if (g_ui_debug_enabled) {
             ESP_LOGI("ui", "ui_tick: queue waiting before drain=%u", (unsigned)before_waiting);
         }
-        /* Drain as many events as available. Use a tiny timeout (1 tick) for the receive so we
-         * give other tasks a chance to run and avoid a tight busy loop if something odd happens.
+        /* Drain as many events as available. Use non-blocking receive (0 ticks) to avoid stalling
+         * and keep per-tick work bounded.
+         *
+         * IMPORTANT: If knob is currently active, defer button transitions this tick to avoid
+         * races like SELECTION<->EDIT flips while style updates are in flight.
          */
         /* Cap events per tick to avoid starving LVGL and tripping WDT under fast rotations */
         int processed = 0;
-        while (processed < 8 && (rc = xQueueReceive(q, &bev, 1)) == pdTRUE) {
+        while (processed < 2 && (rc = xQueueReceive(q, &bev, 0)) == pdTRUE) {
             ESP_LOGI("ui", "ui_tick: dequeued event %d", bev);
             switch (bev) {
                 case BUTTON_SINGLE_CLICK:
-                    /* Single click: follow documented 3-step flow:
-                     * 1st click -> enter SELECTION (hover)
-                     * 2nd click -> confirm selection and enter EDIT
-                     * 3rd click -> apply and return to NORMAL
+                    /* Single click: documented 3-step flow:
+                     * 1st -> enter SELECTION (hover)
+                     * 2nd -> confirm selection and enter EDIT
+                     * 3rd -> apply and return to NORMAL
                      */
                     if (g_control_state == CONTROL_STATE_NORMAL) {
                         ui_enter_selection_mode();
                     } else {
                         ui_confirm_selection();
                     }
+                    /* After a state transition, stop draining more events this tick to avoid
+                     * overlapping style updates with concurrent knob processing.
+                     */
+                    processed = 2; /* force exit loop */
                     break;
-                case 1001: /* EVT_KNOB_LEFT (synthetic) */
-                case 1002: /* EVT_KNOB_RIGHT (synthetic) */ {
-                    /* Knob ISR/task already set direction and pending flag; just process in LVGL context */
-                    process_knob_events();
-                } break;
-                // case BUTTON_PRESS_END:
-                //     ui_cancel_selection_mode();
-                //     break;
                 default:
                     /* ignore other events for the selection flow */
                     break;
             }
-            processed++;
+            if (processed < 2) {
+                processed++;
+            }
             /* Optional safety: if queue still appears full and we're continually draining, emit a debug message */
             if (g_ui_debug_enabled) {
                 UBaseType_t mid_waiting = uxQueueMessagesWaiting(q);

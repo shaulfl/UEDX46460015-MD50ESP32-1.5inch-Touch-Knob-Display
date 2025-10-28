@@ -58,6 +58,40 @@ extern const char *button_event_table[];
 
 static const char *TAG = "example";
 
+/* Periodic FreeRTOS task to drive ui_tick() under lvgl_port_lock so
+ * queued button events and knob processing run regularly and safely.
+ * Using a task avoids any uncertainty with LVGL timer setup timing.
+ */
+static void ui_tick_task(void *arg) {
+    (void)arg;
+    const TickType_t period = pdMS_TO_TICKS(20); /* 50 Hz */
+    uint32_t iter = 0;
+    for (;;) {
+        /* Call ui_tick() without holding lvgl_port_lock here.
+         * ui_tick() and the functions it invokes use lvgl_port_lock/unlock
+         * internally where needed. Avoiding a top-level lock prevents nested
+         * locking and excessive stack usage that could lead to overflows.
+         */
+        ui_tick();
+
+#if (configUSE_TRACE_FACILITY == 1) || (tskKERNEL_VERSION_MAJOR >= 10)
+        /* Periodically log remaining stack to catch regressions before overflow */
+        if ((iter++ % 100) == 0) {
+            UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(NULL);
+            /* Convert to bytes for readability (stack units are words) */
+            uint32_t watermark_bytes = watermark_words * sizeof(StackType_t);
+            if (watermark_bytes < 768) {
+                ESP_LOGW(TAG, "ui_tick_task low stack watermark: %u bytes", (unsigned)watermark_bytes);
+            } else {
+                ESP_LOGD(TAG, "ui_tick_task stack watermark: %u bytes", (unsigned)watermark_bytes);
+            }
+        }
+#endif
+
+        vTaskDelay(period);
+    }
+}
+
 // Flag to ensure screen refresh happens only once
 static bool screen_refreshed = false;
 
@@ -308,6 +342,12 @@ static volatile int32_t knob_accum = 0;
 static volatile bool knob_event_pending = false;
 static portMUX_TYPE knob_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
+
+/* Expose a lightweight predicate so ui.c can prioritize/coalesce when knob is active. */
+bool knob_events_pending(void) {
+    return knob_event_pending;
+}
+
 const char *knob_event_table[] = {
     "KNOB_LEFT",
     "KNOB_RIGHT",
@@ -348,45 +388,52 @@ void process_knob_events(void)
 {
     if (!knob_event_pending) return;
 
-    int32_t d;
+    /* Take a snapshot of accumulated delta, then process only a small burst per tick
+     * to avoid long LVGL-critical sections and WDT under fast rotations.
+     */
+    int32_t d_total;
     portENTER_CRITICAL(&knob_spinlock);
-    d = knob_accum;
+    d_total = knob_accum;
     knob_accum = 0;
     portEXIT_CRITICAL(&knob_spinlock);
 
-    if (d == 0) {
+    if (d_total == 0) {
         knob_event_pending = false;
         return;
     }
 
-    ESP_LOGI(TAG, "Processing knob event, delta=%d, ui_state=%d", (int)d, (int)g_control_state);
-
-    /* Route knob behavior based on current control state
-     * NOTE: Regular (NORMAL) mode no longer adjusts volume via the knob to avoid interfering
-     * with the new selection/edit flow. Knob only acts in SELECTION and EDIT states.
+    /* Limit per-tick work: apply at most BURST steps of +/-1 each tick.
+     * Remaining delta is returned to the accumulator for subsequent ticks.
      */
+    const int BURST = 3;
+    int applied = 0;
+
+    /* Derive a single step (-1 or +1) to apply this tick */
+    int step = (d_total > 0) ? 1 : -1;
+
+    ESP_LOGI(TAG, "Processing knob: total=%d, step=%d, ui_state=%d", (int)d_total, step, (int)g_control_state);
+
     if (g_control_state == CONTROL_STATE_SELECTION) {
-        /* Selection mode: cycle through all controls including VOLUME.
-         * Allow navigation between VOLUME, SOURCE, and FILTER controls.
-         */
-        int delta = (int)d;
-        int new_index = g_selected_control_index + delta;
-        
+        /* Only move the highlight by one control per tick to keep UI responsive */
+        int new_index = g_selected_control_index + step;
+
         /* Wrap around all three controls */
         while (new_index < 0) new_index += CONTROL_ITEM_COUNT;
         new_index = new_index % CONTROL_ITEM_COUNT;
-        
+
         g_selected_control_index = new_index;
-        ESP_LOGI(TAG, "SELECTION (all controls) -> selected_control=%d", g_selected_control_index);
-        /* Highlight under LVGL lock */
+        ESP_LOGI(TAG, "SELECTION -> selected_control=%d", g_selected_control_index);
+
         lvgl_port_lock(0);
         ui_highlight_control(g_selected_control_index);
         lvgl_port_unlock();
+
+        applied = 1;
     } else if (g_control_state == CONTROL_STATE_EDIT) {
-        /* Edit mode: knob changes the currently selected control's value */
+        /* Edit the selected control by small steps per tick */
         if (g_selected_control_index == CONTROL_ITEM_VOLUME) {
             int current_volume = get_volume_value();
-            int new_volume = current_volume + (int)d;
+            int new_volume = current_volume + step;
             if (new_volume < 0) new_volume = 0;
             if (new_volume > 100) new_volume = 100;
             if (new_volume != current_volume) {
@@ -394,103 +441,119 @@ void process_knob_events(void)
                 lvgl_port_lock(0);
                 set_volume_value(new_volume);
                 lvgl_port_unlock();
-                ESP_LOGI(TAG, "EDIT[VOLUME] -> volume=%d", get_volume_value());
             }
         } else if (g_selected_control_index == CONTROL_ITEM_SOURCE) {
             int cur = get_source_index();
-            ESP_LOGI(TAG, "EDIT[SOURCE] -> %d + %d", cur, (int)d);
+            ESP_LOGI(TAG, "EDIT[SOURCE] -> %d + %d", cur, step);
             lvgl_port_lock(0);
-            set_source_index(cur + (int)d);
+            set_source_index(cur + step);
             lvgl_port_unlock();
-            ESP_LOGI(TAG, "EDIT[SOURCE] -> source_index=%d", get_source_index());
         } else if (g_selected_control_index == CONTROL_ITEM_FILTER) {
             int cur = get_filter_index();
-            ESP_LOGI(TAG, "EDIT[FILTER] -> %d + %d", cur, (int)d);
+            ESP_LOGI(TAG, "EDIT[FILTER] -> %d + %d", cur, step);
             lvgl_port_lock(0);
-            set_filter_index(cur + (int)d);
+            set_filter_index(cur + step);
             lvgl_port_unlock();
-            ESP_LOGI(TAG, "EDIT[FILTER] -> filter_index=%d", get_filter_index());
         } else {
             ESP_LOGI(TAG, "EDIT -> unknown selected_control %d", g_selected_control_index);
         }
+        applied = 1;
     } else {
-        /* NORMAL state: adjust volume directly without entering SELECTION/EDIT.
-         * This makes the knob act as volume control in NORMAL mode as requested.
-         */
+        /* NORMAL state: volume nudge by one per tick for smoothness */
         int current_volume = get_volume_value();
-        int new_volume = current_volume + (int)d;
+        int new_volume = current_volume + step;
         if (new_volume < 0) new_volume = 0;
         if (new_volume > 100) new_volume = 100;
         if (new_volume != current_volume) {
-            ESP_LOGI(TAG, "NORMAL -> adjust volume %d -> %d", current_volume, new_volume);
+            ESP_LOGI(TAG, "NORMAL -> volume %d -> %d", current_volume, new_volume);
             lvgl_port_lock(0);
             set_volume_value(new_volume);
             lvgl_port_unlock();
         } else {
             ESP_LOGD(TAG, "NORMAL -> volume unchanged (%d)", current_volume);
         }
+        applied = 1;
     }
 
-    /* clear pending flags */
-    knob_event_pending = false;
+    /* Return any remaining delta to the accumulator and keep the pending flag set
+     * so the next ui_tick() will process the rest in small bursts.
+     */
+    int32_t remaining = d_total - (applied * step);
+    if (remaining != 0) {
+        portENTER_CRITICAL(&knob_spinlock);
+        knob_accum += remaining;
+        portEXIT_CRITICAL(&knob_spinlock);
+        knob_event_pending = true;
+    } else {
+        knob_event_pending = false;
+    }
 }
 
 // Add a periodic task to ensure knob events are processed
 
- void   LVGL_button_event(void *event)
- {
-     /* Button callbacks may be invoked from timer/ISR contexts (iot_button). Avoid calling
-      * LVGL APIs or UI functions directly here. Instead, enqueue the button event onto
-      * the FreeRTOS queue declared in ui.h so ui_tick() (LVGL/main context) can consume it.
-      */
-     button_event_t bev = (button_event_t)event;
-     ESP_LOGI(TAG, "LVGL_button_event (enqueue): %s (ui_state=%d)", button_event_table[bev], (int)g_control_state);
-  
-     /* Enforce strict 3-step flow: ignore BUTTON_PRESS_REPEAT_DONE so only
-      * BUTTON_SINGLE_CLICK advances selection/edit/apply states.
-      */
-     if (bev == BUTTON_PRESS_REPEAT_DONE) {
-         ESP_LOGI(TAG, "LVGL_button_event: ignoring BUTTON_PRESS_REPEAT_DONE (strict single-click flow)");
-         return;
-     }
-  
-     /* Try to enqueue into the shared FreeRTOS queue (use FromISR variant when possible).
-      * g_button_queue is exposed as an opaque void* so cast it back to QueueHandle_t here.
-      */
-     if (g_button_queue) {
-         QueueHandle_t q = (QueueHandle_t)g_button_queue;
-         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-         /* Prefer the FromISR API for ISR contexts */
-         BaseType_t rc = xQueueSendFromISR(q, &bev, &xHigherPriorityTaskWoken);
-         if (rc == pdTRUE) {
-             /* Successfully enqueued from ISR context */
-             portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-         } else {
-             /* FromISR failed. This commonly means we're not in an ISR or the queue was full.
-              * Try a short blocking send in task context with a small timeout to reduce missed events
-              * when the queue is momentarily full.
-              */
-             TickType_t timeout = pdMS_TO_TICKS(10);
-             rc = xQueueSend(q, &bev, timeout);
-             if (rc == pdTRUE) {
-                 ESP_LOGI(TAG, "LVGL_button_event: enqueued via xQueueSend (timeout %u ms)", (unsigned)pdTICKS_TO_MS(timeout));
-             } else {
-                 /* Log additional diagnostics (queue space) to help debugging */
-                 UBaseType_t free_spaces = uxQueueSpacesAvailable(q);
-                 UBaseType_t messages_waiting = uxQueueMessagesWaiting(q);
-                 ESP_LOGW(TAG, "LVGL_button_event: failed to enqueue (rc=%d). queue free=%u waiting=%u; falling back to legacy store",
-                          (int)rc, (unsigned)free_spaces, (unsigned)messages_waiting);
-                 last_button_event = (int)bev;
-                 button_event_pending = true;
-             }
-         }
-     } else {
-         /* Queue not created yet — fallback to legacy single-event handoff */
-         ESP_LOGW(TAG, "LVGL_button_event: g_button_queue not initialized, using legacy handoff");
-         last_button_event = (int)bev;
-         button_event_pending = true;
-     }
- }
+void LVGL_button_event(void *event)
+{
+    /* Button callbacks may be invoked from timer/ISR contexts (iot_button). Avoid calling
+     * LVGL APIs or UI functions directly here. Instead, enqueue a minimal set of events onto
+     * the FreeRTOS queue declared in ui.h so ui_tick() (LVGL/main context) can consume it.
+     *
+     * Policy: Only BUTTON_SINGLE_CLICK is enqueued to drive the SELECTION->EDIT->APPLY flow.
+     * All other button events are ignored to prevent queue flooding and nondeterminism.
+     */
+    button_event_t bev = (button_event_t)event;
+
+    if (bev != BUTTON_SINGLE_CLICK) {
+        /* Drop non-single-click events to keep the queue clean and predictable */
+        ESP_LOGD(TAG, "LVGL_button_event: dropping %s (only SINGLE_CLICK is enqueued)", button_event_table[bev]);
+        return;
+    }
+
+    ESP_LOGI(TAG, "LVGL_button_event (enqueue): %s (ui_state=%d)", button_event_table[bev], (int)g_control_state);
+
+    /* Try to enqueue into the shared FreeRTOS queue. Choose correct API based on ISR/task context.
+     * Never call blocking xQueueSend from ISR context.
+     */
+    if (g_button_queue) {
+        QueueHandle_t q = (QueueHandle_t)g_button_queue;
+        if (xPortInIsrContext()) {
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            BaseType_t rc = xQueueSendFromISR(q, &bev, &xHigherPriorityTaskWoken);
+            if (rc == pdTRUE) {
+                portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+            } else {
+                /* Queue full in ISR: don't block. Record a lightweight legacy flag for ui_tick() fallback. */
+                UBaseType_t free_spaces = uxQueueSpacesAvailable(q);
+                UBaseType_t messages_waiting = uxQueueMessagesWaiting(q);
+                ESP_EARLY_LOGW(TAG, "LVGL_button_event[ISR]: queue full; free=%u waiting=%u; using legacy handoff",
+                               (unsigned)free_spaces, (unsigned)messages_waiting);
+                last_button_event = (int)bev;
+                button_event_pending = true;
+            }
+        } else {
+            /* Task context: non-blocking send first; if it fails, use a very short timeout. */
+            BaseType_t rc = xQueueSend(q, &bev, 0);
+            if (rc != pdTRUE) {
+                TickType_t timeout = pdMS_TO_TICKS(2);
+                rc = xQueueSend(q, &bev, timeout);
+                if (rc == pdTRUE) {
+                    ESP_LOGD(TAG, "LVGL_button_event: enqueued via xQueueSend with short timeout");
+                } else {
+                    UBaseType_t free_spaces = uxQueueSpacesAvailable(q);
+                    UBaseType_t messages_waiting = uxQueueMessagesWaiting(q);
+                    ESP_LOGW(TAG, "LVGL_button_event: enqueue failed (rc=%d) free=%u waiting=%u; using legacy handoff",
+                             (int)rc, (unsigned)free_spaces, (unsigned)messages_waiting);
+                    last_button_event = (int)bev;
+                    button_event_pending = true;
+                }
+            }
+        }
+    } else {
+        /* Queue not created yet — fallback to legacy single-event handoff */
+        ESP_LOGW(TAG, "LVGL_button_event: g_button_queue not initialized, using legacy handoff");
+        last_button_event = (int)bev;
+        button_event_pending = true;
+    }
+}
 
 static knob_handle_t knob = NULL;
 
@@ -724,16 +787,32 @@ void app_main(void)
    
     ESP_LOGI(TAG, "Display custom UI");
     // Lock the mutex due to the LVGL APIs are not thread-safe
-     lvgl_port_lock(0);
-       ui_init();
-    
-        // lv_demo_widgets();      /* A widgets example */
-        //lv_demo_music();        /* A modern, smartphone-like music player demo. */
-        // lv_demo_stress();       /* A stress test for LVGL. */
-        // lv_demo_benchmark();    /* A demo to measure the performance of LVGL or to compare different settings. */
-       
-        // Release the mutex
-      lvgl_port_unlock();
+    lvgl_port_lock(0);
+    ui_init();
+
+    // lv_demo_widgets();      /* A widgets example */
+    // lv_demo_music();        /* A modern, smartphone-like music player demo. */
+    // lv_demo_stress();       /* A stress test for LVGL. */
+    // lv_demo_benchmark();    /* A demo to measure the performance of LVGL or to compare different settings. */
+
+    // Release the mutex
+    lvgl_port_unlock();
+
+    /* Start the periodic UI tick task (no top-level LVGL lock; functions inside do their own locking).
+     * Pin to core 1 to keep it alongside other input helpers and avoid preempting display flush.
+     * Bump stack to 8 KB to prevent overflow during heavy LVGL flows (edit screen updates, logging).
+     */
+    BaseType_t ui_tick_created = xTaskCreatePinnedToCore(
+        ui_tick_task,
+        "ui_tick",
+        8192,                     /* stack size (bytes) */
+        NULL,
+        tskIDLE_PRIORITY + 2,     /* slight boost over idle */
+        NULL,
+        1);
+    if (ui_tick_created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create ui_tick task (rc=%d)", (int)ui_tick_created);
+    }
     
     // Adjust the volume after 1 second (only once)
     if (!screen_refreshed) {

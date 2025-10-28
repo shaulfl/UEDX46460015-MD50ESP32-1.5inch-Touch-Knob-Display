@@ -40,6 +40,9 @@ void create_screens();
 // Audio control component creation function
 lv_obj_t *create_audio_control(lv_obj_t *parent, int32_t x, int32_t y, const char *text, const lv_font_t *font);
 
+// Volume control functions
+void set_volume_value(int value);
+int get_volume_value(void);
 
 /* External hooks for platform-level input events (knob/button) */
 void LVGL_knob_event(void *event);

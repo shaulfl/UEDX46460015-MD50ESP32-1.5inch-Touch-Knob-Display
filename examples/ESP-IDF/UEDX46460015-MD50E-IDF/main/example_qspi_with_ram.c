@@ -61,7 +61,7 @@ static SemaphoreHandle_t lvgl_mux = NULL;
 
 // The pixel number in horizontal and vertical
 #if CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
-#define EXAMPLE_LCD_H_RES             471// 466
+#define EXAMPLE_LCD_H_RES             470// 466
 #define EXAMPLE_LCD_V_RES             466// 466
 #endif
 

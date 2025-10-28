@@ -45,6 +45,9 @@
 
 static const char *TAG = "example";
 
+// Flag to ensure screen refresh happens only once
+static bool screen_refreshed = false;
+
 
 
 /* LCD IO and panel */
@@ -60,9 +63,8 @@ static esp_lcd_touch_handle_t touch_handle = NULL;
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #define EXAMPLE_LCD_HOST               (SPI2_HOST)
 #define EXAMPLE_LCD_BITS_PER_PIXEL  (16)
-#define EXAMPLE_LCD_DRAW_BUFF_DOUBLE (1)
-#define EXAMPLE_LCD_LVGL_AVOID_TEAR             (1)
-#define EXAMPLE_LCD_DRAW_BUFF_HEIGHT (80)
+#define EXAMPLE_LCD_DRAW_BUFF_DOUBLE (1) 
+#define EXAMPLE_LCD_DRAW_BUFF_HEIGHT (60)
 #define EXAMPLE_LCD_BK_LIGHT_ON_LEVEL  1
 #define EXAMPLE_LCD_BK_LIGHT_OFF_LEVEL !EXAMPLE_LCD_BK_LIGHT_ON_LEVEL
 #define EXAMPLE_PIN_NUM_LCD_CS            (GPIO_NUM_12)
@@ -76,7 +78,7 @@ static esp_lcd_touch_handle_t touch_handle = NULL;
 
 // The pixel number in horizontal and vertical
 #if CONFIG_EXAMPLE_LCD_CONTROLLER_SH8601
-#define EXAMPLE_LCD_H_RES             472// 466
+#define EXAMPLE_LCD_H_RES             470// 466
 #define EXAMPLE_LCD_V_RES             466// 466
 #endif
 
@@ -113,7 +115,7 @@ typedef enum {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////// Please update the following configuration according to LVGL ///////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-#define EXAMPLE_LVGL_BUFF_SIZE         (EXAMPLE_LCD_H_RES * 20)
+#define EXAMPLE_LVGL_BUFF_SIZE         (EXAMPLE_LCD_H_RES * 10)
 #define EXAMPLE_LVGL_TICK_PERIOD_MS    2
 #define EXAMPLE_LVGL_TASK_MAX_DELAY_MS 500
 #define EXAMPLE_LVGL_TASK_MIN_DELAY_MS 2
@@ -176,7 +178,7 @@ esp_err_t app_touch_init(void)
 
     /* Initialize touch HW */
     const esp_lcd_touch_config_t tp_cfg = {
-        .x_max = EXAMPLE_LCD_H_RES,
+        .x_max = EXAMPLE_LCD_H_RES+2,
         .y_max = EXAMPLE_LCD_V_RES,
         .rst_gpio_num = EXAMPLE_PIN_NUM_TOUCH_RST, // Shared with LCD reset
         .int_gpio_num = EXAMPLE_PIN_NUM_TOUCH_INT,
@@ -213,16 +215,15 @@ esp_err_t app_lvgl_init(void)
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = lcd_io,
         .panel_handle = lcd_panel,
-        .buffer_size =  EXAMPLE_LCD_H_RES * EXAMPLE_LCD_DRAW_BUFF_HEIGHT,//EXAMPLE_LCD_DRAW_BUFF_HEIGHT
+        .buffer_size =  EXAMPLE_LCD_H_RES * EXAMPLE_LCD_DRAW_BUFF_HEIGHT +2,//EXAMPLE_LCD_DRAW_BUFF_HEIGHT
         .double_buffer = EXAMPLE_LCD_DRAW_BUFF_DOUBLE,
-        .hres = EXAMPLE_LCD_H_RES,
-        .vres = EXAMPLE_LCD_V_RES,
+        .hres = EXAMPLE_LCD_H_RES+2,
+        .vres = EXAMPLE_LCD_V_RES+2,
         .monochrome = false,
 #if LVGL_VERSION_MAJOR >= 9
         .color_format = LV_COLOR_FORMAT_RGB565,
 #endif
         .rotation = {
-            .swap_xy = false,//false,  屏幕方向一般在这里改
             .mirror_x = false,//true,
             .mirror_y = false,
         },
@@ -404,6 +405,38 @@ void button_init(uint32_t button_num)
 }
 
 //***************** */
+//BOTH THOSE FUNCTIONS ARE A WORKAROUND FOR THE STARTUP GLITCH IN DISPLAY
+// Function to adjust volume once
+static void adjust_volume_once(void) {
+    // Set flag to indicate adjustment has been done
+    screen_refreshed = true;
+    
+    // Get current volume value
+    int current_volume = get_volume_value();
+    
+    // Temporarily change volume by -1
+    set_volume_value(current_volume - 1);
+    
+    // Small delay to ensure the change is processed
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // Restore original volume value
+    set_volume_value(current_volume);
+    
+    ESP_LOGI(TAG, "Volume adjusted by -1 and restored");
+}
+
+// Task implementation for volume adjustment
+static void adjust_volume_task_impl(void* arg) {
+    // Wait 50 milliseconds for UI to fully initialize
+    vTaskDelay(pdMS_TO_TICKS(300));
+    
+    // Call the volume adjustment function
+    adjust_volume_once();
+    
+    // Delete this task
+    vTaskDelete(NULL);
+}
 
 void app_main(void)
 {
@@ -494,7 +527,7 @@ void app_main(void)
     // Lock the mutex due to the LVGL APIs are not thread-safe
      lvgl_port_lock(0);
        ui_init();
-   
+    
         // lv_demo_widgets();      /* A widgets example */
         //lv_demo_music();        /* A modern, smartphone-like music player demo. */
         // lv_demo_stress();       /* A stress test for LVGL. */
@@ -503,4 +536,9 @@ void app_main(void)
         // Release the mutex
       lvgl_port_unlock();
     
+    // Adjust the volume after 1 second (only once)
+    if (!screen_refreshed) {
+        // Create a simple task to handle the volume adjustment
+        xTaskCreate(adjust_volume_task_impl, "adjust_volume", 4096, NULL, 5, NULL);
+    }
 }

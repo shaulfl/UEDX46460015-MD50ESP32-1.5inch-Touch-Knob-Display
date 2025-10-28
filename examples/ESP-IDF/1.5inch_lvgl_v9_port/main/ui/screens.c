@@ -38,8 +38,10 @@ static int g_bitrate_value = 00000; /* default 44.1 kHz represented as integer H
  */
 static int g_volume_value = 100; /* percent 0-100 */
 
+/* Track last arc value to skip unnecessary updates */
+static int last_arc_value = -1;
+
 void set_volume_value(int value) {
-    /* Accept any integer value for volume (no clamping). The displayed label shows the raw value. */
     g_volume_value = value;
     if (objects.volume_meter) {
         /* The volume label is the last child of the inner button; reuse helper to set it */
@@ -50,6 +52,13 @@ void set_volume_value(int value) {
         if (btn) {
             set_button_label_text_safe(btn, buf);
         }
+        
+    }
+    
+    /* Update the big arc if needed */
+    if (objects.obj0 && lv_arc_get_value(objects.obj0) != value) {
+        lv_arc_set_value(objects.obj0, value);
+        lv_obj_invalidate(objects.obj0);
     }
 }
 
@@ -158,8 +167,16 @@ void create_screen_main() {
             lv_obj_set_style_border_width(obj, 0, LV_PART_KNOB | LV_STATE_DEFAULT);
             lv_obj_set_style_radius(obj, 0, LV_PART_KNOB | LV_STATE_DEFAULT);
 
-            lv_obj_set_style_arc_width(obj, 18, LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_arc_width(obj, 18, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+            lv_obj_set_style_arc_width(obj, 20, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_arc_width(obj, 20, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+            
+            /* Add anti-aliasing for smoother rendering */
+            lv_obj_set_style_arc_rounded(obj, true, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_arc_rounded(obj, true, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+            
+            /* Add smooth color transitions */
+            lv_obj_set_style_arc_color(obj, lv_color_hex(0xff333333), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_arc_color(obj, lv_color_hex(0xff00ff00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
 
             /* Update volume when the big arc value changes */
             lv_obj_add_event_cb(objects.obj0, big_arc_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
@@ -359,7 +376,14 @@ void tick_screen_by_id(enum ScreensEnum screenId) {
     lv_obj_set_style_bg_opa(arc, 0, LV_PART_KNOB | LV_STATE_DEFAULT);
     /* thinner arc stroke to look like a ring inside the button */
     lv_obj_set_style_arc_width(arc, arcThickness, LV_PART_MAIN | LV_STATE_DEFAULT);
-    /* put the arc behind the button's contents */
+    
+    /* Improved arc styling */
+    lv_obj_set_style_arc_rounded(arc, true, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_rounded(arc, true, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(arc, lv_color_hex(0xff444444), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(arc, lv_color_hex(0xff00ff00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    
+    /* Ensure proper layering - arc behind button content */
     lv_obj_move_background(arc);
     
     /* Create label and center it inside the button */
@@ -394,20 +418,63 @@ void tick_screen_by_id(enum ScreensEnum screenId) {
  *  - Updates the inner decorative arc inside the volume control button to reflect the same percentage.
  */
 static void big_arc_event_cb(lv_event_t * e) {
+    /* Called when the big outer arc value changes.
+     * We update the logical volume and the smaller inner arc and ensure proper invalidation
+     * of all affected objects to avoid partial/ghosted redraw artifacts.
+     */
     if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
     lv_obj_t *big = lv_event_get_target(e);
     if (!big) return;
 
-    /* Read big arc value and determine its range.
-     * LVGL arcs typically use 0..100 by default in this project, but be defensive.
-     */
     int big_val = lv_arc_get_value(big);
 
-    /* Map big_val to desired volume value. Here we assume big_val already in 0..100.
-     * If your big arc uses a different range, adjust mapping accordingly.
+    /* Skip redundant updates */
+    if (big_val == last_arc_value) {
+        return;
+    }
+    last_arc_value = big_val;
+
+    /* Update logical volume (this will update inner label and inner decorative arc) */
+    set_volume_value(big_val);
+
+    /* Invalidate the big arc itself */
+    lv_obj_invalidate(big);
+
+    /* Also invalidate the volume control container and its inner arc (if present)
+     * to ensure LVGL repaints the full area instead of leaving scanline artifacts.
+     * We defensively check for objects.volume_meter and iterate children to find arcs.
      */
-    int new_volume = big_val;
-    set_volume_value(new_volume);
+    if (objects.volume_meter) {
+        /* invalidate the container */
+        lv_obj_invalidate(objects.volume_meter);
+
+        /* inner button is child 0 of container */
+        lv_obj_t *btn = lv_obj_get_child(objects.volume_meter, 0);
+        if (btn) {
+            lv_obj_invalidate(btn);
+            /* find inner arc (child 0 of the button in this UI) and invalidate it too */
+            if (lv_obj_get_child_cnt(btn) > 0) {
+                lv_obj_t *possible_arc = lv_obj_get_child(btn, 0);
+                if (possible_arc) {
+#ifdef LV_USE_OBJ_GET_TYPE
+                    /* Best-effort: only invalidate if it's an arc */
+                    if (lv_obj_get_class(possible_arc) == &lv_arc_class) {
+                        lv_obj_invalidate(possible_arc);
+                    } else {
+                        lv_obj_invalidate(possible_arc);
+                    }
+#else
+                    /* Without type checks, just invalidate the first child (safe fallback) */
+                    lv_obj_invalidate(possible_arc);
+#endif
+                }
+            }
+        }
+    }
+
+    /* Avoid calling lv_tick_inc() from event callbacks — LVGL tick should be driven from a timer/RTOS tick.
+     * Removing it prevents re-entrancy/partial-draw timing issues that can cause scanline artifacts.
+     */
 }
 
 /* Event handler for the audio control's inner button.
@@ -548,3 +615,4 @@ static void audio_ctrl_gesture_cb(lv_event_t * e) {
         return;
     }
 }
+

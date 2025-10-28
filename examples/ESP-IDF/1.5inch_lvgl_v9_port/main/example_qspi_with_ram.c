@@ -304,8 +304,9 @@ static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
 //***************The following code is for standardizing the event triggering of rotary encoders and buttons.**************** */
 //**************旋钮********* */
 // Global variables to store knob events
-static volatile int knob_direction = 0;  // 0=no change, 1=right, -1=left
+static volatile int32_t knob_accum = 0;
 static volatile bool knob_event_pending = false;
+static portMUX_TYPE knob_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 const char *knob_event_table[] = {
     "KNOB_LEFT",
@@ -324,28 +325,22 @@ const char *knob_event_table[] = {
 void   LVGL_knob_event(void *event)
 {
     knob_event_t knob_event = (knob_event_t)event;
-    /* Always set the legacy flags so the main LVGL task (ui_tick) will process the knob
-     * event via the knob_event_pending path even if the shared queue is consumed by another task.
-     * Then attempt to enqueue a synthetic event into the shared queue for parity with button handling.
-     */
-    int kd = 0;
-    if (knob_event == KNOB_LEFT) kd = 1;
-    else if (knob_event == KNOB_RIGHT) kd = -1;
+    int32_t delta = 0;
+    if (knob_event == KNOB_LEFT) {
+        delta = 1;
+    } else if (knob_event == KNOB_RIGHT) {
+        delta = -1;
+    } else {
+        return;
+    }
 
-    /* Set legacy flags unconditionally to guarantee delivery to ui_tick() */
-    knob_direction = kd;
+    portENTER_CRITICAL_ISR(&knob_spinlock);
+    knob_accum += delta;
+    portEXIT_CRITICAL_ISR(&knob_spinlock);
+
     knob_event_pending = true;
 
-    /* Promote to INFO to verify delivery in runtime logs (ensures visibility even if log level hides DEBUG). */
-    ESP_LOGI(TAG, "LVGL_knob_event (enqueue): %s (kd=%d ui_state=%d)", knob_event_table[knob_event], kd, (int)g_control_state);
-
-    /* Do NOT enqueue knob events into g_button_queue.
-     * Under fast rotation the queue gets saturated and causes WDT stalls.
-     * We rely solely on the lightweight legacy path (knob_event_pending + knob_direction),
-     * which ui_tick() processes in LVGL context each frame.
-     */
-    (void)g_button_queue; /* intentionally unused for knob events */
-    return;
+    ESP_LOGI(TAG, "LVGL_knob_event: %s (delta=%d)", knob_event_table[knob_event], (int)delta);
 }
 
 // Function to process knob events in the main LVGL task
@@ -353,7 +348,18 @@ void process_knob_events(void)
 {
     if (!knob_event_pending) return;
 
-    ESP_LOGI(TAG, "Processing knob event, direction=%d, ui_state=%d", knob_direction, (int)g_control_state);
+    int32_t d;
+    portENTER_CRITICAL(&knob_spinlock);
+    d = knob_accum;
+    knob_accum = 0;
+    portEXIT_CRITICAL(&knob_spinlock);
+
+    if (d == 0) {
+        knob_event_pending = false;
+        return;
+    }
+
+    ESP_LOGI(TAG, "Processing knob event, delta=%d, ui_state=%d", (int)d, (int)g_control_state);
 
     /* Route knob behavior based on current control state
      * NOTE: Regular (NORMAL) mode no longer adjusts volume via the knob to avoid interfering
@@ -364,7 +370,7 @@ void process_knob_events(void)
          * Map selection indices to the SOURCE/FILTER pair while preserving the global
          * g_selected_control_index so confirming still selects the intended control.
          */
-        int delta = knob_direction;
+        int delta = (int)d;
         /* If current selection is VOLUME, move to SOURCE by default when rotating */
         int sel = g_selected_control_index;
         if (sel == CONTROL_ITEM_VOLUME) {
@@ -387,31 +393,28 @@ void process_knob_events(void)
         /* Edit mode: knob changes the currently selected control's value */
         if (g_selected_control_index == CONTROL_ITEM_VOLUME) {
             int current_volume = get_volume_value();
-            int new_volume = current_volume + knob_direction;
+            int new_volume = current_volume + (int)d;
             if (new_volume < 0) new_volume = 0;
             if (new_volume > 100) new_volume = 100;
-            ESP_LOGI(TAG, "EDIT[VOLUME] -> %d -> %d", current_volume, new_volume);
-            lvgl_port_lock(0);
-            set_volume_value(new_volume);
-            lvgl_port_unlock();
-            ESP_LOGI(TAG, "EDIT[VOLUME] -> volume=%d", get_volume_value());
+            if (new_volume != current_volume) {
+                ESP_LOGI(TAG, "EDIT[VOLUME] -> %d -> %d", current_volume, new_volume);
+                lvgl_port_lock(0);
+                set_volume_value(new_volume);
+                lvgl_port_unlock();
+                ESP_LOGI(TAG, "EDIT[VOLUME] -> volume=%d", get_volume_value());
+            }
         } else if (g_selected_control_index == CONTROL_ITEM_SOURCE) {
             int cur = get_source_index();
-            int next = cur + knob_direction;
-            if (next < 0) next = 0;
-            /* set_source_index clamps to bounds; we rely on it for safety */
-            ESP_LOGI(TAG, "EDIT[SOURCE] -> %d -> %d", cur, next);
+            ESP_LOGI(TAG, "EDIT[SOURCE] -> %d + %d", cur, (int)d);
             lvgl_port_lock(0);
-            set_source_index(next);
+            set_source_index(cur + (int)d);
             lvgl_port_unlock();
             ESP_LOGI(TAG, "EDIT[SOURCE] -> source_index=%d", get_source_index());
         } else if (g_selected_control_index == CONTROL_ITEM_FILTER) {
             int cur = get_filter_index();
-            int next = cur + knob_direction;
-            if (next < 0) next = 0;
-            ESP_LOGI(TAG, "EDIT[FILTER] -> %d -> %d", cur, next);
+            ESP_LOGI(TAG, "EDIT[FILTER] -> %d + %d", cur, (int)d);
             lvgl_port_lock(0);
-            set_filter_index(next);
+            set_filter_index(cur + (int)d);
             lvgl_port_unlock();
             ESP_LOGI(TAG, "EDIT[FILTER] -> filter_index=%d", get_filter_index());
         } else {
@@ -422,49 +425,24 @@ void process_knob_events(void)
          * This makes the knob act as volume control in NORMAL mode as requested.
          */
         int current_volume = get_volume_value();
-        int new_volume = current_volume + knob_direction;
+        int new_volume = current_volume + (int)d;
         if (new_volume < 0) new_volume = 0;
         if (new_volume > 100) new_volume = 100;
         if (new_volume != current_volume) {
             ESP_LOGI(TAG, "NORMAL -> adjust volume %d -> %d", current_volume, new_volume);
-#ifdef lvgl_port_lock
             lvgl_port_lock(0);
-#endif
             set_volume_value(new_volume);
-#ifdef lvgl_port_unlock
             lvgl_port_unlock();
-#endif
         } else {
             ESP_LOGD(TAG, "NORMAL -> volume unchanged (%d)", current_volume);
         }
     }
- 
+
     /* clear pending flags */
     knob_event_pending = false;
-    knob_direction = 0;
 }
 
 // Add a periodic task to ensure knob events are processed
-static void knob_task(void *arg)
-{
-    /* The knob should be processed in the LVGL/main context to avoid calling LVGL APIs
-     * from a worker task (which caused watchdog trips and invalid LVGL access when the
-     * knob was moved quickly). process_knob_events() is invoked from ui_tick() (LVGL
-     * context) when knob_event_pending is set. This task now only polls the hardware
-     * flag (keeps the device responsive) but does NOT call any LVGL functions.
-     */
-    while (1) {
-        if (knob_event_pending) {
-            /* Optionally log at DEBUG level only to avoid spamming logs during fast rotations */
-            ESP_LOGD(TAG, "Knob task: event pending, main LVGL task will handle it");
-            /* Do not call process_knob_events() here because it calls LVGL APIs.
-             * ui_tick() will detect knob_event_pending and call process_knob_events()
-             * in the correct context.
-             */
-        }
-        vTaskDelay(pdMS_TO_TICKS(50)); // Check every 50ms
-    }
-}
 
  void   LVGL_button_event(void *event)
  {
@@ -748,9 +726,8 @@ void app_main(void)
     knob_init(BSP_ENCODER_A, BSP_ENCODER_B);
     button_init(BSP_BTN_PRESS);
     
-    // Create knob processing task with larger stack size
-    // Pin input handling (knob) to core 1 to isolate from LVGL (core 0)
-    xTaskCreatePinnedToCore(knob_task, "knob_task", 4096, NULL, 5, NULL, 1);
+    // Knob processing now handled directly in ui_tick() with accumulation for fast turns
+    // No separate task needed
    
     ESP_LOGI(TAG, "Display custom UI");
     // Lock the mutex due to the LVGL APIs are not thread-safe

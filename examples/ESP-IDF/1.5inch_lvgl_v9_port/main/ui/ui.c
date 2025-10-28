@@ -157,7 +157,7 @@ void ui_enter_selection_mode(void) {
         return;
     }
     g_control_state = CONTROL_STATE_SELECTION;
-    /* Start selection on SOURCE so hovering cycles only between SOURCE and FILTER as requested */
+    /* Start selection on SOURCE to cycle through all three controls */
     g_selected_control_index = CONTROL_ITEM_SOURCE;
     update_selection_deadline_ms();
     ui_highlight_control(g_selected_control_index);

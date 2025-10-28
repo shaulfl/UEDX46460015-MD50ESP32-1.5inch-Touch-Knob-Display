@@ -7,6 +7,7 @@ set(UI_SOURCES_C
     ui/screens.c
     ui/styles.c
     ui/images.c
+    system_monitor.c
     ui/fonts/ui_font_inter_bold_26.c
     ui/fonts/ui_font_inter_bold_28.c
     ui/fonts/ui_font_inter_bold_32.c

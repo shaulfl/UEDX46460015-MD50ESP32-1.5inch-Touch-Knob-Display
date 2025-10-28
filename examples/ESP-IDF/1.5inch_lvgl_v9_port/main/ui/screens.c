@@ -13,6 +13,11 @@
 // Include system monitoring
 #include "system_monitor.h"
 
+// Include ESP-IDF headers
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include "esp_system.h"
+
 
 /* Forward declaration: helper that safely sets the last-child label text of a button-like object.
  * Declared early so other functions that call it before its definition don't trigger implicit-declarations.
@@ -44,10 +49,7 @@ static int g_volume_value = 100; /* percent 0-100 */
 /* Track last arc value to skip unnecessary updates */
 static int last_arc_value = -1;
 
-/* FPS tracking variables */
-static uint32_t frame_count = 0;
-static uint64_t last_fps_time = 0;
-static float current_fps = 0.0f;
+/* System monitoring labels */
 static lv_obj_t *fps_label = NULL;
 static lv_obj_t *cpu_label = NULL;
 static lv_obj_t *ram_label = NULL;
@@ -312,8 +314,11 @@ void create_screen_main() {
         ram_label = lv_label_create(info_container);
         lv_obj_set_style_text_color(ram_label, lv_color_hex(0xff0000), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_text_font(ram_label, &ui_font_inter_bold_26, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_label_set_text(ram_label, "RAM: 0KB");
+        lv_label_set_text(ram_label, "RAM: 0.0%");
     }
+    
+    // Initialize system monitor
+    system_monitor_init();
     
     tick_screen_main();
 }
@@ -330,17 +335,12 @@ void delete_screen_main() {
     objects.format = 0;
     
     // Reset system monitor
-    memset(&system_monitor, 0, sizeof(system_monitor));
-}
-
-/* Update system information display */
-void update_system_info() {
-    system_monitor_update(&system_monitor);
+    system_monitor_reset();
 }
 
 /* Hover behavior removed. tick_screen_main is now a no-op. */
 void tick_screen_main() {
-    update_system_info();
+    system_monitor_update(fps_label, cpu_label, ram_label);
 }
 
 
@@ -357,7 +357,6 @@ void create_screen_by_id(enum ScreensEnum screenId) {
 }
 
 /* Forward-declare event callbacks so they can be attached from create_audio_control() and create_screen_main(). */
-static void audio_ctrl_btn_event_cb(lv_event_t * e);
 static void big_arc_event_cb(lv_event_t * e);
 
 typedef void (*delete_screen_func_t)();

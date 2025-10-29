@@ -60,6 +60,7 @@ void ui_cancel_selection_mode(void);
 void ui_apply_selected_control(void);
 void ui_highlight_control(int control_index);
 void ui_set_selection_timeout_ms(uint32_t ms);
+bool ui_check_selection_timeout(void);
 
 /* Enable/disable verbose debug logging for UI control flow */
 void ui_debug_enable(bool enable);

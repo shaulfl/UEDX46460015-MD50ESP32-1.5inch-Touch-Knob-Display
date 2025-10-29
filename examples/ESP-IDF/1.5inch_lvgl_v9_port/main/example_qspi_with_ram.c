@@ -20,6 +20,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_task_wdt.h"
 
 #include "lvgl.h"
 #include "lv_demos.h"
@@ -62,18 +63,63 @@ static const char *TAG = "example";
  * queued button events and knob processing run regularly and safely.
  * Using a task avoids any uncertainty with LVGL timer setup timing.
  */
+/* Event queue for UI updates to avoid LVGL lock contention */
+static QueueHandle_t ui_event_queue = NULL;
+static SemaphoreHandle_t ui_event_mutex = NULL;
+
+typedef enum {
+    UI_EVENT_KNOB_ROTATION,
+    UI_EVENT_BUTTON_CLICK,
+    UI_EVENT_SELECTION_TIMEOUT
+} ui_event_type_t;
+
+typedef struct {
+    ui_event_type_t type;
+    int32_t value;
+} ui_event_t;
+
+/* Forward declarations for LVGL task callback */
+void ui_process_events_in_lvgl_context(void);
+static void process_knob_rotation_in_lvgl(int32_t delta);
+
 static void ui_tick_task(void *arg) {
     (void)arg;
     /* Speed up UI servicing to reduce perceived knob latency */
     const TickType_t period = pdMS_TO_TICKS(10); /* 100 Hz */
     uint32_t iter = 0;
+    uint32_t wdt_reset_counter = 0;
+    
+    /* Create event queue and mutex for thread-safe communication */
+    ui_event_queue = xQueueCreate(32, sizeof(ui_event_t));
+    ui_event_mutex = xSemaphoreCreateMutex();
+    
+    /* Add this task to the watchdog monitor */
+    esp_task_wdt_add(NULL);
+    ESP_LOGI(TAG, "ui_tick_task started and added to watchdog monitor");
+    
     for (;;) {
-        /* Call ui_tick() without holding lvgl_port_lock here.
-         * ui_tick() and the functions it invokes use lvgl_port_lock/unlock
-         * internally where needed. Avoiding a top-level lock prevents nested
-         * locking and excessive stack usage that could lead to overflows.
-         */
-        ui_tick();
+        /* Reset watchdog timer at the beginning of each iteration */
+        esp_task_wdt_reset();
+        wdt_reset_counter++;
+        
+        /* Process selection timeout (non-critical, can be done here) */
+        if (ui_check_selection_timeout()) {
+            ESP_LOGI(TAG, "Selection timeout reached, cancelling");
+            
+            /* Queue selection timeout event for LVGL task to process */
+            if (ui_event_queue && ui_event_mutex) {
+                xSemaphoreTake(ui_event_mutex, portMAX_DELAY);
+                ui_event_t event = {.type = UI_EVENT_SELECTION_TIMEOUT, .value = 0};
+                xQueueSend(ui_event_queue, &event, 0);
+                xSemaphoreGive(ui_event_mutex);
+            }
+        }
+        
+        /* Notify LVGL task to process events instead of trying to acquire lock here */
+        lvgl_port_task_wake(LVGL_PORT_EVENT_USER, NULL);
+        
+        /* Reset watchdog timer again after operations to ensure we don't timeout */
+        esp_task_wdt_reset();
 
 #if (configUSE_TRACE_FACILITY == 1) || (tskKERNEL_VERSION_MAJOR >= 10)
         /* Periodically log remaining stack to catch regressions before overflow */
@@ -84,12 +130,127 @@ static void ui_tick_task(void *arg) {
             if (watermark_bytes < 768) {
                 ESP_LOGW(TAG, "ui_tick_task low stack watermark: %u bytes", (unsigned)watermark_bytes);
             } else {
-                ESP_LOGD(TAG, "ui_tick_task stack watermark: %u bytes", (unsigned)watermark_bytes);
+                ESP_LOGD(TAG, "ui_tick_task stack watermark: %u bytes, WDT resets: %u",
+                         (unsigned)watermark_bytes, (unsigned)wdt_reset_counter);
             }
         }
 #endif
 
+        /* Reset watchdog before delay to ensure we don't timeout during sleep */
+        esp_task_wdt_reset();
         vTaskDelay(period);
+    }
+}
+
+/* This function is called from LVGL task context when LVGL_PORT_EVENT_USER is received */
+void ui_process_events_in_lvgl_context(void) {
+    /* First process button events from the legacy button queue */
+    if (g_button_queue) {
+        int button_event;
+        while (xQueueReceive(g_button_queue, &button_event, 0) == pdTRUE) {
+            ESP_LOGI(TAG, "Processing button event %d in LVGL context", button_event);
+            
+            /* Handle button events directly in LVGL context */
+            if (button_event == BUTTON_SINGLE_CLICK) {
+                if (g_control_state == CONTROL_STATE_NORMAL) {
+                    ui_enter_selection_mode();
+                } else {
+                    ui_confirm_selection();
+                }
+            }
+        }
+    }
+    
+    /* Then process events from our new UI event queue */
+    if (!ui_event_queue || !ui_event_mutex) return;
+    
+    ui_event_t event;
+    while (xQueueReceive(ui_event_queue, &event, 0) == pdTRUE) {
+        switch (event.type) {
+            case UI_EVENT_KNOB_ROTATION:
+                /* Process knob rotation in LVGL context */
+                process_knob_rotation_in_lvgl(event.value);
+                break;
+                
+            case UI_EVENT_BUTTON_CLICK:
+                /* Process button click in LVGL context */
+                if (g_control_state == CONTROL_STATE_NORMAL) {
+                    ui_enter_selection_mode();
+                } else {
+                    ui_confirm_selection();
+                }
+                break;
+                
+            case UI_EVENT_SELECTION_TIMEOUT:
+                /* Process selection timeout in LVGL context */
+                ui_cancel_selection_mode();
+                break;
+        }
+    }
+}
+
+/* Helper function to process knob rotation in LVGL context */
+static void process_knob_rotation_in_lvgl(int32_t delta) {
+    /* Apply bounded burst processing */
+    const int BASE_BURST = 10;
+    const int MAX_BURST  = 24;
+    int step_count = delta;
+    if (step_count > BASE_BURST) {
+        step_count = (step_count > (BASE_BURST * 2)) ? (step_count / 2) : BASE_BURST;
+        if (step_count > MAX_BURST) step_count = MAX_BURST;
+    } else if (step_count < -BASE_BURST) {
+        step_count = (step_count < -(BASE_BURST * 2)) ? (step_count / 2) : -BASE_BURST;
+        if (step_count < -MAX_BURST) step_count = -MAX_BURST;
+    }
+
+    ESP_LOGD(TAG, "Processing knob: delta=%d, apply=%d, ui_state=%d", (int)delta, step_count, (int)g_control_state);
+
+    if (g_control_state == CONTROL_STATE_SELECTION) {
+        /* Move highlight by up to |step_count| with a single highlight update */
+        int new_index = g_selected_control_index + step_count;
+        while (new_index < 0) new_index += CONTROL_ITEM_COUNT;
+        new_index = new_index % CONTROL_ITEM_COUNT;
+
+        if (new_index != g_selected_control_index) {
+            g_selected_control_index = new_index;
+            ESP_LOGD(TAG, "SELECTION -> selected_control=%d", g_selected_control_index);
+            ui_highlight_control(g_selected_control_index);
+        }
+    } else if (g_control_state == CONTROL_STATE_EDIT) {
+        if (g_selected_control_index == CONTROL_ITEM_VOLUME) {
+            int current_volume = get_volume_value();
+            int new_volume = current_volume + step_count;
+            if (new_volume < 0) new_volume = 0;
+            if (new_volume > 100) new_volume = 100;
+            if (new_volume != current_volume) {
+                ESP_LOGD(TAG, "EDIT[VOLUME] -> %d -> %d", current_volume, new_volume);
+                set_volume_value(new_volume);
+            }
+        } else if (g_selected_control_index == CONTROL_ITEM_SOURCE) {
+            int cur = get_source_index();
+            int new_idx = cur + step_count;
+            ESP_LOGD(TAG, "EDIT[SOURCE] -> %d -> %d (delta=%d)", cur, new_idx, step_count);
+            set_source_index(new_idx);
+        } else if (g_selected_control_index == CONTROL_ITEM_FILTER) {
+            int cur = get_filter_index();
+            int new_idx = cur + step_count;
+            ESP_LOGD(TAG, "EDIT[FILTER] -> %d -> %d (delta=%d)", cur, new_idx, step_count);
+            set_filter_index(new_idx);
+        } else {
+            ESP_LOGI(TAG, "EDIT -> unknown selected_control %d", g_selected_control_index);
+        }
+    } else {
+        /* NORMAL state: coalesce multiple volume steps into one set */
+        int current_volume = get_volume_value();
+        int new_volume = current_volume + step_count;
+        if (new_volume < 0) new_volume = 0;
+        if (new_volume > 100) new_volume = 100;
+        if (new_volume != current_volume) {
+            ESP_LOGD(TAG, "NORMAL -> volume %d -> %d (delta=%d)", current_volume, new_volume, step_count);
+            set_volume_value(new_volume);
+        } else {
+            ESP_LOGD(TAG, "NORMAL -> volume unchanged (%d)", current_volume);
+        }
     }
 }
 
@@ -382,6 +543,14 @@ void   LVGL_knob_event(void *event)
     knob_event_pending = true;
 
     ESP_LOGI(TAG, "LVGL_knob_event: %s (delta=%d)", knob_event_table[knob_event], (int)delta);
+    
+    /* Queue knob rotation event for LVGL task to process */
+    if (ui_event_queue && ui_event_mutex) {
+        xSemaphoreTake(ui_event_mutex, portMAX_DELAY);
+        ui_event_t event = {.type = UI_EVENT_KNOB_ROTATION, .value = delta};
+        xQueueSendFromISR(ui_event_queue, &event, NULL);
+        xSemaphoreGive(ui_event_mutex);
+    }
 }
 
 // Function to process knob events in the main LVGL task
@@ -389,6 +558,9 @@ void process_knob_events(void)
 {
     if (!knob_event_pending) return;
 
+    /* Track execution time to prevent blocking */
+    int64_t start_time = esp_timer_get_time();
+    
     /* Take a snapshot of accumulated delta, then process only a bounded burst per tick
      * to avoid long LVGL-critical sections and WDT under fast rotations, while improving
      * responsiveness vs single-step-per-tick.
@@ -422,6 +594,16 @@ void process_knob_events(void)
 
     ESP_LOGD(TAG, "Processing knob: total=%d, apply=%d, ui_state=%d", (int)d_total, step_count, (int)g_control_state);
 
+    /* Use timeout for LVGL lock to prevent blocking */
+    if (lvgl_port_lock(pdMS_TO_TICKS(50)) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to acquire LVGL lock in process_knob_events, deferring to next tick");
+        /* Return the delta for next tick */
+        portENTER_CRITICAL(&knob_spinlock);
+        knob_accum += d_total;
+        portEXIT_CRITICAL(&knob_spinlock);
+        return;
+    }
+
     if (g_control_state == CONTROL_STATE_SELECTION) {
         /* Move highlight by up to |step_count| with a single highlight update */
         int new_index = g_selected_control_index + step_count;
@@ -431,9 +613,7 @@ void process_knob_events(void)
         if (new_index != g_selected_control_index) {
             g_selected_control_index = new_index;
             ESP_LOGD(TAG, "SELECTION -> selected_control=%d", g_selected_control_index);
-            lvgl_port_lock(0);
             ui_highlight_control(g_selected_control_index);
-            lvgl_port_unlock();
         }
     } else if (g_control_state == CONTROL_STATE_EDIT) {
         if (g_selected_control_index == CONTROL_ITEM_VOLUME) {
@@ -443,24 +623,18 @@ void process_knob_events(void)
             if (new_volume > 100) new_volume = 100;
             if (new_volume != current_volume) {
                 ESP_LOGD(TAG, "EDIT[VOLUME] -> %d -> %d", current_volume, new_volume);
-                lvgl_port_lock(0);
                 set_volume_value(new_volume);
-                lvgl_port_unlock();
             }
         } else if (g_selected_control_index == CONTROL_ITEM_SOURCE) {
             int cur = get_source_index();
             int new_idx = cur + step_count;
             ESP_LOGD(TAG, "EDIT[SOURCE] -> %d -> %d (delta=%d)", cur, new_idx, step_count);
-            lvgl_port_lock(0);
             set_source_index(new_idx);
-            lvgl_port_unlock();
         } else if (g_selected_control_index == CONTROL_ITEM_FILTER) {
             int cur = get_filter_index();
             int new_idx = cur + step_count;
             ESP_LOGD(TAG, "EDIT[FILTER] -> %d -> %d (delta=%d)", cur, new_idx, step_count);
-            lvgl_port_lock(0);
             set_filter_index(new_idx);
-            lvgl_port_unlock();
         } else {
             ESP_LOGI(TAG, "EDIT -> unknown selected_control %d", g_selected_control_index);
         }
@@ -472,13 +646,14 @@ void process_knob_events(void)
         if (new_volume > 100) new_volume = 100;
         if (new_volume != current_volume) {
             ESP_LOGD(TAG, "NORMAL -> volume %d -> %d (delta=%d)", current_volume, new_volume, step_count);
-            lvgl_port_lock(0);
             set_volume_value(new_volume);
-            lvgl_port_unlock();
         } else {
             ESP_LOGD(TAG, "NORMAL -> volume unchanged (%d)", current_volume);
         }
     }
+    
+    /* Release LVGL lock */
+    lvgl_port_unlock();
 
     /* Return remaining (if any) for future ticks */
     int32_t remaining = d_total - step_count;
@@ -489,6 +664,13 @@ void process_knob_events(void)
         knob_event_pending = true;
     } else {
         knob_event_pending = false;
+    }
+    
+    /* Log execution time if it exceeds threshold */
+    int64_t end_time = esp_timer_get_time();
+    int64_t execution_time_us = end_time - start_time;
+    if (execution_time_us > 3000) { /* Log if taking more than 3ms */
+        ESP_LOGW(TAG, "process_knob_events took %lld us (threshold: 3000 us)", execution_time_us);
     }
 }
 
@@ -550,9 +732,21 @@ void LVGL_button_event(void *event)
                 }
             }
         }
+    } else if (ui_event_queue && ui_event_mutex) {
+        /* Use new event queue system to avoid LVGL lock contention */
+        xSemaphoreTake(ui_event_mutex, portMAX_DELAY);
+        ui_event_t event = {.type = UI_EVENT_BUTTON_CLICK, .value = 0};
+        if (xPortInIsrContext()) {
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            xQueueSendFromISR(ui_event_queue, &event, &xHigherPriorityTaskWoken);
+            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        } else {
+            xQueueSend(ui_event_queue, &event, 0);
+        }
+        xSemaphoreGive(ui_event_mutex);
     } else {
         /* Queue not created yet — fallback to legacy single-event handoff */
-        ESP_LOGW(TAG, "LVGL_button_event: g_button_queue not initialized, using legacy handoff");
+        ESP_LOGW(TAG, "LVGL_button_event: no event queue available, using legacy handoff");
         last_button_event = (int)bev;
         button_event_pending = true;
     }

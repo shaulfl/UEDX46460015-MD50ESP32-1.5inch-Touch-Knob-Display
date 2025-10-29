@@ -104,6 +104,16 @@ void ui_set_selection_timeout_ms(uint32_t ms) {
     if (g_ui_debug_enabled) ESP_LOGI("ui", "Selection timeout set to %u ms", ms);
 }
 
+bool ui_check_selection_timeout(void) {
+    if (g_control_state != CONTROL_STATE_NORMAL && g_selection_deadline_ms != 0) {
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        if (now_ms >= g_selection_deadline_ms) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Highlight a control container (or clear when control_index < 0).
  * We operate on the inner button (child 0) of each container to avoid touching layout.
  *
@@ -283,115 +293,10 @@ void ui_init() {
     loadScreen(SCREEN_ID_MAIN);
 }
 
+/* This function is now deprecated - UI processing is handled in LVGL context via event queue */
 void ui_tick() {
-#ifdef lvgl_port_lock
-    lvgl_port_lock(0);
-#endif
-    tick_screen(currentScreen);
-#ifdef lvgl_port_unlock
-    lvgl_port_unlock();
-#endif
-
-    /* Handle selection timeout (cancels selection/edit when expired) */
-    if (g_control_state != CONTROL_STATE_NORMAL) {
-        int64_t now_ms = esp_timer_get_time() / 1000;
-        if (g_selection_deadline_ms && now_ms >= g_selection_deadline_ms) {
-            ESP_LOGI("ui", "Selection timeout reached (now=%lld, deadline=%lld), cancelling", now_ms, g_selection_deadline_ms);
-            ui_cancel_selection_mode();
-        }
-    }
-
-    /* Drain events from the FreeRTOS queue first (preferred, robust). Each event is
-     * an int representing button_event_t. This runs in LVGL/main context so it's safe
-     * to call LVGL APIs.
-     */
-    if (g_button_queue) {
-        int bev;
-        BaseType_t rc;
-        QueueHandle_t q = (QueueHandle_t)g_button_queue;
-        /* Diagnostic: check how many messages are waiting before we attempt to drain.
-         * If the queue appears full but we never dequeue, this log will help root-cause it.
-         */
-        UBaseType_t before_waiting = uxQueueMessagesWaiting(q);
-        if (g_ui_debug_enabled) {
-            ESP_LOGI("ui", "ui_tick: queue waiting before drain=%u", (unsigned)before_waiting);
-        }
-        /* Drain as many events as available. Use non-blocking receive (0 ticks) to avoid stalling
-         * and keep per-tick work bounded.
-         *
-         * IMPORTANT: If knob is currently active, defer button transitions this tick to avoid
-         * races like SELECTION<->EDIT flips while style updates are in flight.
-         */
-        /* Cap events per tick to avoid starving LVGL and tripping WDT under fast rotations */
-        int processed = 0;
-        while (processed < 2 && (rc = xQueueReceive(q, &bev, 0)) == pdTRUE) {
-            ESP_LOGI("ui", "ui_tick: dequeued event %d", bev);
-            switch (bev) {
-                case BUTTON_SINGLE_CLICK:
-                    /* Single click: documented 3-step flow:
-                     * 1st -> enter SELECTION (hover)
-                     * 2nd -> confirm selection and enter EDIT
-                     * 3rd -> apply and return to NORMAL
-                     */
-                    if (g_control_state == CONTROL_STATE_NORMAL) {
-                        ui_enter_selection_mode();
-                    } else {
-                        ui_confirm_selection();
-                    }
-                    /* After a state transition, stop draining more events this tick to avoid
-                     * overlapping style updates with concurrent knob processing.
-                     */
-                    processed = 2; /* force exit loop */
-                    break;
-                default:
-                    /* ignore other events for the selection flow */
-                    break;
-            }
-            if (processed < 2) {
-                processed++;
-            }
-            /* Optional safety: if queue still appears full and we're continually draining, emit a debug message */
-            if (g_ui_debug_enabled) {
-                UBaseType_t mid_waiting = uxQueueMessagesWaiting(q);
-                if (mid_waiting > 0) {
-                    ESP_LOGD("ui", "ui_tick: queue still has %u messages after dequeue", (unsigned)mid_waiting);
-                }
-            }
-        }
-        UBaseType_t after_waiting = uxQueueMessagesWaiting(q);
-        if (g_ui_debug_enabled) {
-            ESP_LOGI("ui", "ui_tick: queue waiting after drain=%u (rc=%d)", (unsigned)after_waiting, (int)rc);
-        }
-    } else {
-        /* Fallback to the legacy single-event handoff if queue wasn't created for some reason */
-        extern volatile bool button_event_pending;
-        extern volatile int last_button_event;
-        if (button_event_pending) {
-            int bev = last_button_event;
-            button_event_pending = false;
-            last_button_event = -1;
-            ESP_LOGI("ui", "ui_tick: consuming queued button event %d (legacy)", bev);
-
-            switch (bev) {
-                case BUTTON_PRESS_REPEAT_DONE:
-                case BUTTON_SINGLE_CLICK:
-                    if (g_control_state == CONTROL_STATE_NORMAL) {
-                        ui_enter_selection_mode();
-                    } else {
-                        ui_confirm_selection();
-                    }
-                    break;
-                default:
-                    break;
-            }
-        }
-    }
-
-    /* Always call process_knob_events() in LVGL context.
-     * It returns immediately if no knob event is pending (flag is managed inside example_qspi_with_ram.c).
-     * This avoids relying on a TU-local knob_event_pending symbol from here.
-     */
-    process_knob_events();
+    /* Empty implementation - all UI processing moved to LVGL context via event queue */
+    ESP_LOGD("ui", "ui_tick() called - processing moved to LVGL context");
 }
 
 #endif
